@@ -42,7 +42,7 @@ function runNode (script, args = [], timeout = 900000) {
  * CI 模式下跳过的套件 —— 每一个都必须在干净克隆上实测过确实跑不起来。
  *
  * 别把这份清单当"不重要所以跳过"：它们在本地是有意义的（装机、PG+MinIO 集成、
- * 示例数据原子性……）。跳过只有一个原因 —— **CI 环境提供不了前提**：
+ * 示例数据反复重建……）。跳过只有一个原因 —— **CI 环境提供不了前提**：
  *
  *   · 缺夹具素材（.gitignore 排除真实扫描件，见 tools/fixtures/README.md）
  *   · 需要先产出安装包 exe（verify-installed）
