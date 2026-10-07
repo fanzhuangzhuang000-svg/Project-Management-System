@@ -41,15 +41,15 @@ ok(/build-artifacts\.js/.test(ci), 'CI 调 build-artifacts.js');
 ok(/verify-artifacts\.js/.test(ci), 'CI 调 verify-artifacts.js');
 ok(/runs-on: windows-latest/.test(ci), 'CI 跑在 windows-latest（装机验证/OCR/csc 只在 Windows 成立）');
 
-// ★ 分支名必须与仓库实际用的一致。
+// ★ push 触发器的 branches 列表必须含仓库默认主分支 master。
 // 踩过的坑：workflow 写 branches: [main]，而仓库默认分支是 master，
 // 结果 push 到 master 时 CI **静默不触发** —— 没有红灯，只是从来没跑过。
-const { spawnSync: sp } = require('node:child_process');
-const cur = sp('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
-const branch = (cur.stdout || '').trim();
+// 注意：这里查的是「主分支有没有被监听」，不是「当前 checkout 的分支在不在列表」。
+// 后者会在 PR 分支（如 audit-fixes/*）上误报 —— PR 由 pull_request 触发，本就不该出现在 push.branches 里。
 const brBlock = /branches:\s*\[([^\]]+)\]/.exec(ci);
-ok(!!brBlock && branch && brBlock[1].includes(branch),
-  `CI 监听当前分支 ${branch || '?'}（branches: [${brBlock ? brBlock[1] : '未找到'}]）`);
+const watched = brBlock ? brBlock[1].split(',').map(s => s.trim().replace(/['"]/g, '')) : [];
+ok(watched.includes('master'),
+  `CI push 监听含默认主分支 master（branches: [${watched.join(', ') || '未找到'}]）`);
 
 const rel = fs.readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8');
 ok(/tags: \['v\*'\]/.test(rel), 'Release 由 v* 标签触发');

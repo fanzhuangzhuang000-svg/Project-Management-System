@@ -1,12 +1,15 @@
 'use strict';
 /**
- * 验证「清空+重建示例数据」的原子性
+ * 验证「清空+重建示例数据」的一致性
  *
  * 背景：以前端点是先 clear（一次事务）再 seed（另一次事务），
  * 中间有个极短空窗，并发读取会看到「示例数据全没了」——
  * 实测偶发把 materials 读成 0，查了很久才定位到时序问题。
  *
- * 现在改成 reseedDemo()：一个事务里做完。这个测试就是压它。
+ * 现在收敛成 reseedDemo()：仍是「先清后写」两次写（seed 内部嵌套调用
+ * 不允许外层再包事务，详见 db.js 第 1540 行注释），但把"清完立即重播"
+ * 收敛在 db.js 一个函数里，调用方（含 ensureDemoData）做"播完再校验、
+ * 不齐重试"兜底。这个测试压的是反复重建是否**幂等**与**并发读不到空窗**。
  */
 const T = require('./test-auth.js');
 
@@ -43,7 +46,7 @@ const T = require('./test-auth.js');
   await Promise.all([rebuild(), reader(), reader()]);
 
   console.log(`      读了 ${reads} 次，最小值 ${minSeen}，读到 0 的次数 ${zeros}`);
-  console.log(`      ${zeros === 0 ? '✓ 原子化生效，读不到中间态' : '✗ 仍有 ' + zeros + ' 次读到空窗'}`);
+  console.log(`      ${zeros === 0 ? '✓ 并发读不到中间空窗' : '✗ 仍有 ' + zeros + ' 次读到空窗'}`);
 
   console.log('  [3] 数据仍然完整');
   const after = await dash();
@@ -59,7 +62,7 @@ const T = require('./test-auth.js');
 
   const pass = zeros === 0 && ok && noDup;
   console.log('\n  ' + '='.repeat(52));
-  console.log(`  原子性验证：${pass ? '通过' : '不通过'}`);
+  console.log(`  一致性验证：${pass ? '通过' : '不通过'}`);
   console.log('  ' + '='.repeat(52));
   process.exit(pass ? 0 : 1);
 })().catch(e => { console.error('  ✗ ' + e.message); process.exit(1) });

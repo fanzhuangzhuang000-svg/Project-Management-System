@@ -42,7 +42,7 @@ function runNode (script, args = [], timeout = 900000) {
  * CI 模式下跳过的套件 —— 每一个都必须在干净克隆上实测过确实跑不起来。
  *
  * 别把这份清单当"不重要所以跳过"：它们在本地是有意义的（装机、PG+MinIO 集成、
- * 示例数据原子性……）。跳过只有一个原因 —— **CI 环境提供不了前提**：
+ * 示例数据反复重建……）。跳过只有一个原因 —— **CI 环境提供不了前提**：
  *
  *   · 缺夹具素材（.gitignore 排除真实扫描件，见 tools/fixtures/README.md）
  *   · 需要先产出安装包 exe（verify-installed）
@@ -97,7 +97,7 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   }
 
   // ---------- 3. 主程序测试套件 ----------
-  head('3/6  主程序测试（12 套件）');
+  head('3/6  主程序测试（25 套件）');
   const SUITES = [    ['登录与权限', 'auth-test.js'], ['表级越权', 'perm-test.js'],
     ['八项优化', 'upgrade-test.js'], ['性能回归', 'perf-test.js'],
     ['子系统多选', 'multi-test.js'], ['付款条款解析', 'plan-test.js'],
@@ -107,7 +107,7 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     ['授权闭环', 'license-flow-test.js'],
     ['升级迁移', 'migration-test.js'], ['MinIO 存储', 'minio-mock-test.js'],
     ['Docker 配置', 'verify-compose.js'],
-    ['示例数据原子性', 'reseed-atomic-test.js'],
+    ['示例数据一致性', 'reseed-atomic-test.js'],
     ['装机验证', 'verify-installed.js'],
     ['多租户隔离', 'tenant-test.js'],
     ['专业版集成', 'verify-pro-edition.js'],
