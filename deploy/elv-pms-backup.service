@@ -1,0 +1,15 @@
+[Unit]
+Description=elv-pms 数据库备份
+Documentation=file:/opt/elv-pms/README.md
+
+[Service]
+Type=oneshot
+User=elv-pms
+Group=elv-pms
+WorkingDirectory=/opt/elv-pms
+ExecStart=/usr/bin/node /opt/elv-pms/tools/backup.js
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/elv-pms/elv-pms.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=elv-pms-backup

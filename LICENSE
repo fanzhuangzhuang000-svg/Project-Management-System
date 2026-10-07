@@ -1,0 +1,27 @@
+Copyright (c) 2026 弱电智能化工程项目管理系统 · 版权所有
+
+本软件为专有软件（Proprietary Software），非开源。
+
+版权所有 © 2026 全部权利保留。未经著作权人事先书面许可，
+任何个人或组织不得复制、修改、分发、再发布、用于商业目的或以任何
+形式传播本软件的任何部分，包括但不限于源代码、文档、界面设计、
+图标及其他资源。
+
+本软件按「现状」提供，不附带任何明示或默示的担保，包括但不限于
+对适销性、特定用途适用性及不侵权的担保。在任何情况下，著作权人
+均不对因使用或无法使用本软件而产生的任何直接、间接、附带或后果性
+损害承担责任。
+
+第三方组件
+----------
+本软件使用以下开源第三方组件，其版权与许可条款归原作者所有：
+
+  · Node.js 及 npm 生态依赖 —— 详见各依赖包内的 LICENSE 文件
+  · PGlite（@electric-sql/pglite）—— PostgreSQL 的 WASM 实现，Apache-2.0
+  · pg（node-postgres）—— MIT License
+  · minio（minio-js）—— Apache-2.0
+  · js-yaml —— MIT License
+  · React / TypeScript / Vite / Tailwind CSS —— MIT License
+  · Tesseract OCR（Linux 端可选依赖）—— Apache-2.0
+
+上述组件按各自条款独立授权，著作权人不对其作出任何担保。

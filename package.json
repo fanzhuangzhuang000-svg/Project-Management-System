@@ -1,0 +1,16 @@
+{
+  "name": "elv-pms",
+  "version": "1.0.0",
+  "private": true,
+  "description": "弱电智能化工程项目管理系统",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tools/run-all.js"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "js-yaml": "^5.4.3",
+    "minio": "^8.0.7",
+    "pg": "^8.23.1"
+  }
+}

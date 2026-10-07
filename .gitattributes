@@ -1,0 +1,40 @@
+# 让 Windows / Linux 上开发的人检出后得到同样的文件
+# 核心问题：Windows 的 CRLF 会让 diff 全是"改了又改回去"的噪音，
+# 而 .bat 批处理在 Linux 上跑不起来，Dockerfile 用 CRLF 也会被 docker 拒绝。
+
+# 默认：入库统一存 LF，检出时按平台自动转换
+* text=auto eol=lf
+
+# 必须保持 CRLF：Windows 批处理 / PowerShell
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 必须保持 LF：Shell 脚本、Docker 容器内文件
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf
+*.service text eol=lf
+
+# 二进制：禁止行尾转换与文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.xlsx binary
+*.xls binary
+*.docx binary
+*.exe binary
+*.zip binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.db binary
+
+# 语言统计用的 linguist 属性
+*.js   linguist-language=JavaScript
+*.ts   linguist-language=TypeScript
+*.tsx  linguist-language=TypeScript
+*.md   linguist-documentation

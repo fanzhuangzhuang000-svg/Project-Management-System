@@ -1,0 +1,122 @@
+# 弱电项目管理系统 —— 专业版（网络版）
+#
+# 客户拿到手：装好 Docker Desktop，双击 start.bat 就行。
+# 三个容器：app（后端+前端）、postgres（数据库）、minio（附件存储）
+#
+# 数据全部落在 ./data 下，删容器不丢数据：
+#   ./data/pgdata   PostgreSQL 数据
+#   ./data/minio    MinIO 附件
+#   ./backup         数据库备份
+#
+# 用法：
+#   docker compose up -d          启动
+#   docker compose down           停止（数据保留）
+#   docker compose logs -f app    看日志
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: elv-pms-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:-elvpms}
+      POSTGRES_USER: ${PG_USER:-elvpms}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?必须在 .env 里设置数据库密码}
+      # 中文排序：不设的话 ORDER BY 中文名会乱
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # app 要等它真正能接受连接再起，否则首启会连不上
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-elvpms} -d ${PG_DATABASE:-elvpms}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [elv]
+
+  minio:
+    # ⚠️ MinIO 已从 Docker Hub 撤下（minio/minio 现在返回 denied/404），
+    # 所以镜像做成可配置的：卖方可以在 .env 里换成任何 S3 兼容实现，不用改这个文件。
+    image: ${MINIO_IMAGE:-chainguard/minio:latest}
+    container_name: elv-pms-files
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?必须在 .env 里设置 MinIO 账号}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?必须在 .env 里设置 MinIO 密码}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data/minio:/data
+    ports:
+      # 管理界面，出问题时可以进去看附件到底有没有
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      # ⚠️ 这个健康检查**故意不生效**（commands 被注释掉了）。
+      #
+      # 原来写的是 `mc ready local`，但 `mc` 是 MinIO 的**客户端**工具，
+      # 精简镜像（比如 chainguard 的构建）里不一定有。一旦没有，
+      # 健康检查永远失败 → 而 app 又 depends_on minio 的 service_healthy →
+      # **整个栈永远起不来**，而且报错信息完全看不出是这个原因。
+      #
+      # 所以宁可不用它：app 改成只等服务启动（service_started），
+      # 附件存储若一时不可用，业务会给出明确报错，用户重试即可 ——
+      # 这比"三容器互相等死"好得多。
+      #
+      # 想启用就换成你镜像里确实存在的命令，并把 app 的 condition 改回 service_healthy。
+      test: ["NONE"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [elv]
+
+  app:
+    image: ${IMAGE_REPO:-elv-pms}:${VERSION:-1.0.0}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: elv-pms-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        # 数据库必须真的能连再起 —— 首启要建表，连不上会直接失败。
+        # `pg_isready` 是 postgres 官方镜像自带的，可靠。
+        condition: service_healthy
+      minio:
+        # 只等服务**启动**，不等健康检查。
+        # 原因见上面 minio.healthcheck 的注释：健康检查依赖的 mc 工具在
+        # 精简镜像里可能不存在，一旦卡住就是「三容器互相等死」，
+        # 而且报错完全看不出根因。附件存储晚几十秒可用并不影响启动。
+        condition: service_started
+    environment:
+      DB_URL: postgres://${PG_USER:-elvpms}:${PG_PASSWORD}@postgres:5432/${PG_DATABASE:-elvpms}
+      STORAGE_DRIVER: minio
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET: ${MINIO_BUCKET:-elv-pms}
+      # 首次启动自动写进系统设置（客户不用手填）
+      # AI 助手默认配置（见 .env.example 说明）
+      PMS_AI_ENABLED: ${AI_ENABLED:-}
+      PMS_AI_PROVIDER: ${AI_PROVIDER:-}
+      PMS_AI_API_KEY: ${AI_API_KEY:-}
+      PMS_AI_MODEL: ${AI_MODEL:-}
+      PMS_COMPANY_NAME: ${COMPANY_NAME:-}
+      PMS_ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PMS_LICENSE_SECRET: ${LICENSE_SECRET:-}
+      PMS_BACKUP_DIR: /app/backup
+      TZ: Asia/Shanghai
+    ports:
+      - "${PORT:-8787}:8787"
+    volumes:
+      - ./data/app:/app/data
+      - ./backup:/app/backup
+    networks: [elv]
+
+networks:
+  elv:
+    driver: bridge

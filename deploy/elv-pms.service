@@ -1,0 +1,46 @@
+[Unit]
+Description=弱电项目管理系统（elv-pms）
+Documentation=file:/opt/elv-pms/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+# ★ StartLimit* 必须在 [Unit] 段，不是 [Service]。
+#   systemd 会直接忽略写在 [Service] 里的这两个键，而且**不报错** ——
+#   于是「连续失败 5 次就停下来」这条保护静默失效，崩溃的服务会被无限重启。
+#   （这条是被 systemd-analyze verify 验出来的，不是猜的。）
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=elv-pms
+Group=elv-pms
+WorkingDirectory=/opt/elv-pms
+ExecStart=/usr/bin/node /opt/elv-pms/server.js
+Restart=always
+RestartSec=5s
+
+Environment=NODE_ENV=production
+Environment=TZ=Asia/Shanghai
+# 配置放这里，不要塞进命令行（ps 能看到全部参数，密码会泄露）
+EnvironmentFile=-/etc/elv-pms/elv-pms.env
+
+# ── 资源限制 ──
+# 云主机内存普遍 2G，Node 默认会按物理内存去算堆上限，
+# 在容器/cgroup 里拿到的是宿主机的数字，很容易被 OOM Killer 干掉。
+# 显式设一个保守值更稳。
+Environment=NODE_OPTIONS=--max-old-space-size=768
+
+# ── 安全加固：这套东西只需要读自己的目录、写自己的目录 ──
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/elv-pms/data /opt/elv-pms/backup
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=elv-pms
+
+[Install]
+WantedBy=multi-user.target

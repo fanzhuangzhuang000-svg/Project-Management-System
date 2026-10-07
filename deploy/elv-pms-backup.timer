@@ -1,0 +1,14 @@
+[Unit]
+Description=每天给 elv-pms 做一次数据库备份
+
+[Timer]
+# 每天凌晨 3:17 —— 刻意不用整点
+# 整点是所有人都在跑定时任务的时候，磁盘 IO 竞争最激烈，
+# 备份又恰恰是所有定时任务里最吃 IO 的一个。挪开几分钟差别很实际。
+OnCalendar=*-*-* 03:17:00
+# 关机/休眠错过的那一次，开机后补上（Persistent=true）
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

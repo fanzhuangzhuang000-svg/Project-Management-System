@@ -1,0 +1,102 @@
+# ══════════════════════════════════════════════════════════════
+#  运行时数据 —— 绝不入库
+#  这些是你的业务数据：客户名、合同金额、收付款、发票、附件扫描件。
+#  一旦推上去，即使以后删掉文件，历史提交里依然能翻出来。
+# ══════════════════════════════════════════════════════════════
+.env
+.env.*
+!.env.example
+data/
+data-linux/
+data-pgtest*/
+data-probe*/
+_probe_data*/
+*.log
+logs/
+
+# 备份文件 = 整库快照，比数据库还敏感
+backup/
+*.db
+*.sqlite
+*.sqlite3
+
+# 附件原件（PDF 扫描件 / 报价表）
+*.pdf
+*.xlsx
+*.xls
+*.docx
+attachments/
+attach-cache/
+
+# 授权与密钥
+license-machine.pin
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# ══════════════════════════════════════════════════════════════
+#  依赖与构建产物
+# ══════════════════════════════════════════════════════════════
+node_modules/
+web/node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo
+.npm/
+.vite/
+
+# ⚠️ public/assets 故意**不入库**？
+#   不，它入库 —— 因为 Dockerfile 第 30 行 COPY public ./public。
+#   一旦排除，别人 clone 下来 docker build 出来的镜像会没有前端（白屏）。
+#   Dockerfile 里没有装 vite 现场构建那一步，所以这 882KB 是"能不能跑起来"的前提，
+#   不是无意义的构建垃圾。以后改成容器内构建前端（多阶段 Dockerfile）才能真正排除。
+public-legacy/
+
+# ══════════════════════════════════════════════════════════════
+#  交付物 —— 体积大，走 Release 挂附件，不进 git 历史
+# ══════════════════════════════════════════════════════════════
+dist-installer/
+dist-installer-new/
+screenshots/
+
+# ══════════════════════════════════════════════════════════════
+#  测试夹具 —— 只入库生成脚本，素材本身不入库
+# ══════════════════════════════════════════════════════════════
+# 为什么要这么严：
+#   tools/fixtures/ 里是**真实合同的扫描件与导出文件**（含真实企业名、
+#   真实路名、真实金额）。哪怕仓库是私有的，这些也不该进版本历史 ——
+#   以后仓库一旦转公开、或被人 fork，删文件也追不回来。
+#
+#   替代方案：素材由 make-fixtures.py 等脚本生成，脚本入库、素材不入库。
+#   clone 后跑一次脚本即可恢复测试素材。
+#
+# ⚠️ 代价（必须知道）：14 个测试文件引用 fixtures，其中 4 个**没有**缺文件兜底
+#   （import-test / ocr-chain-test / ui-react-test / ocr-selftest），
+#   没跑生成脚本就跑 npm test，这几个会因找不到素材而报错。
+#   详见 CONTRIBUTING.md「准备测试素材」一节。
+tools/fixtures/*
+!tools/fixtures/make-fixtures.py
+!tools/fixtures/README.md
+
+# ══════════════════════════════════════════════════════════════
+#  编辑器与系统
+# ══════════════════════════════════════════════════════════════
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store
+*.lnk
+
+# 临时探测文件（一次性排查用的脚本与日志）
+_probe_*
+_probe_srv*.log
+_probe_out.log
+_probe_err.log
+# ⚠️ 必须用 **/ 前缀形式，否则只匹配仓库根目录。
+#    没有它的话 tools/_probe-ocr.js 这种子目录里的探针会被误提交。
+**/_probe_*

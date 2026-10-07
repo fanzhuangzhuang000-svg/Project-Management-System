@@ -1,0 +1,240 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   设计基调：玻璃拟态 + 轻量新拟物
+   层级关系全靠阴影和背景色差表达 —— 全局不出现 1px 灰色实边框
+   ========================================================================== */
+
+/* ---- 深浅主题变量（html[data-theme] 切换，localStorage 记忆）---- */
+:root {
+  --bg-canvas: linear-gradient(160deg, #F0F4FF 0%, #F8FAFC 52%, #F5F7FF 100%);
+  --bg-spot-1: rgba(59, 130, 246, 0.10);
+  --bg-spot-2: rgba(139, 92, 246, 0.10);
+  --bg-spot-3: rgba(6, 182, 212, 0.07);
+  --card-bg: #FFFFFF;
+  --card-glass-bg: rgba(255, 255, 255, 0.72);
+  --ink-900: #0F172A;
+  --ink-700: #334155;
+  --ink-500: #64748B;
+  --ink-400: #94A3B8;
+  --tile-bg: #F1F5F9;
+  --tile-bg-hover: #E2E8F0;
+  --input-bg: #F1F5F9;
+  --scroll-thumb: rgba(148, 163, 184, 0.35);
+  --banner-from: #EFF6FF;
+  --banner-to: #FFFFFF;
+  --banner-title: #1E40AF;
+  --topbar-bg: rgba(255, 255, 255, 0.72);
+  --topbar-line: rgba(148, 163, 184, 0.14);
+  --grad-entry-1: linear-gradient(135deg, #10B981 0%, #34D399 100%);
+  --grad-entry-2: linear-gradient(135deg, #3B82F6 0%, #60A5FA 100%);
+  --grad-entry-3: linear-gradient(135deg, #8B5CF6 0%, #A78BFA 100%);
+  --grad-entry-4: linear-gradient(135deg, #22C55E 0%, #4ADE80 100%);
+}
+
+html[data-theme='dark'] {
+  --bg-canvas: #0F172A;
+  --bg-spot-1: rgba(59, 130, 246, 0.08);
+  --bg-spot-2: rgba(139, 92, 246, 0.06);
+  --bg-spot-3: rgba(6, 182, 212, 0.05);
+  --card-bg: #1E293B;
+  --card-glass-bg: rgba(30, 41, 59, 0.82);
+  --ink-900: #F1F5F9;
+  --ink-700: #CBD5E1;
+  --ink-500: #94A3B8;
+  --ink-400: #64748B;
+  --tile-bg: rgba(51, 65, 85, 0.55);
+  --tile-bg-hover: rgba(71, 85, 105, 0.55);
+  --input-bg: rgba(51, 65, 85, 0.55);
+  --scroll-thumb: rgba(71, 85, 105, 0.6);
+  --banner-from: rgba(37, 99, 235, 0.16);
+  --banner-to: #1E293B;
+  --banner-title: #93C5FD;
+  --topbar-bg: rgba(15, 23, 42, 0.72);
+  --topbar-line: rgba(148, 163, 184, 0.10);
+  /* 彩色渐变入口卡保留但压暗亮度 */
+  --grad-entry-1: linear-gradient(135deg, #0B8A63 0%, #10B981 100%);
+  --grad-entry-2: linear-gradient(135deg, #2563EB 0%, #3B82F6 100%);
+  --grad-entry-3: linear-gradient(135deg, #6D28D9 0%, #8B5CF6 100%);
+  --grad-entry-4: linear-gradient(135deg, #15803D 0%, #22C55E 100%);
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+
+  body {
+    color: var(--ink-900);
+    font-family: "Inter", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+                 "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: #F0F4FF;
+    transition: background-color 300ms ease;
+  }
+
+  /* 页面底色：极淡蓝紫渐变 + 两处柔和光斑（深色主题换深底） */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(720px 420px at 12% -6%, var(--bg-spot-1), transparent 62%),
+      radial-gradient(640px 400px at 92% 8%, var(--bg-spot-2), transparent 60%),
+      radial-gradient(800px 520px at 60% 108%, var(--bg-spot-3), transparent 62%),
+      var(--bg-canvas);
+  }
+
+  /* 滚动条：细、圆、无边框感 */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scroll-thumb);
+    border-radius: 99px;
+  }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  /* 输入控件统一去掉生硬边框，用背景色差 + ring */
+  input, select, textarea, button { font-family: inherit; }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+    outline: none;
+  }
+  input, textarea, select {
+    background: var(--input-bg);
+    color: var(--ink-900);
+    border: none;
+    transition: box-shadow 200ms cubic-bezier(0, 0, 0.2, 1), background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+  }
+  input::placeholder, textarea::placeholder { color: var(--ink-400); }
+  input:focus, textarea, select:focus {
+    background: var(--card-bg);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18), 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+}
+
+@layer components {
+  /* ---- 卡片：白底大圆角柔光阴影，hover 上浮（深浅主题共用变量） ---- */
+  .card {
+    border-radius: 20px;
+    background: var(--card-bg);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+    transition: transform 200ms ease, box-shadow 200ms ease, background-color 300ms ease;
+  }
+  .card-hover:hover {
+    box-shadow: 0 12px 40px rgba(99, 102, 241, 0.12);
+    transform: translateY(-2px);
+  }
+  /* 玻璃卡片：半透明 + 背景模糊 */
+  .card-glass {
+    border-radius: 20px;
+    background: var(--card-glass-bg);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+    transition: background-color 300ms ease;
+  }
+
+  /* ---- 品牌渐变：蓝 → 靛蓝 ---- */
+  .grad-brand { background-image: linear-gradient(135deg, #3B82F6 0%, #6366F1 100%); }
+  .grad-purple { background-image: linear-gradient(135deg, #8B5CF6 0%, #A78BFA 100%); }
+  .grad-warm { background-image: linear-gradient(135deg, #F97316 0%, #EF4444 100%); }
+  .grad-cyan { background-image: linear-gradient(135deg, #06B6D4 0%, #22D3EE 100%); }
+  .grad-green { background-image: linear-gradient(135deg, #10B981 0%, #34D399 100%); }
+  .grad-ai { background-image: linear-gradient(135deg, #3B82F6 0%, #8B5CF6 100%); }
+  .text-grad-brand {
+    background-image: linear-gradient(135deg, #3B82F6 0%, #6366F1 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+
+  /* ---- 四张渐变入口卡（深色主题压暗亮度） ---- */
+  .grad-entry-1 { background-image: var(--grad-entry-1); }
+  .grad-entry-2 { background-image: var(--grad-entry-2); }
+  .grad-entry-3 { background-image: var(--grad-entry-3); }
+  .grad-entry-4 { background-image: var(--grad-entry-4); }
+
+  /* ---- 44×44 圆角方形图标底（规格：禁止裸露线框图标）---- */
+  .icon-tile {
+    @apply flex h-11 w-11 flex-none items-center justify-center rounded-tile text-white;
+    box-shadow: 0 6px 18px rgba(59, 130, 246, 0.22);
+  }
+  .icon-tile.sm { @apply h-9 w-9; }
+  .icon-tile.lg { @apply h-12 w-12; }
+
+  /* ---- 胶囊标签 ---- */
+  .pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-[3px] text-tiny font-medium;
+  }
+
+  /* ---- 按钮 ---- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-tile px-4 py-2 text-body font-medium
+           transition-all duration-200 ease-out select-none;
+  }
+  .btn-primary {
+    @apply grad-brand text-white;
+    box-shadow: 0 6px 18px rgba(59, 130, 246, 0.28);
+  }
+  .btn-primary:hover { box-shadow: 0 10px 26px rgba(59, 130, 246, 0.38); transform: translateY(-1px); }
+  .btn-ghost { background: var(--tile-bg); color: var(--ink-700); }
+  .btn-ghost:hover { background: var(--tile-bg-hover); }
+  .btn-soft { background: var(--card-bg); color: var(--ink-700); box-shadow: 0 4px 16px rgba(99, 102, 241, 0.05); }
+  .btn-soft:hover { box-shadow: 0 8px 30px rgba(99, 102, 241, 0.10); transform: translateY(-1px); }
+
+  /* ---- 侧栏菜单项：白底侧栏版 ----
+     选中态：浅蓝底 #EFF6FF + 蓝字 #2563EB，无左侧指示条 */
+  .nav-item {
+    @apply relative flex h-10 items-center gap-3 rounded-lg px-4 text-body
+           transition-all duration-200 ease-out;
+    color: var(--ink-700);
+  }
+  .nav-item:hover { background: rgba(59, 130, 246, 0.07); color: #2563EB; }
+  .nav-item.active {
+    background: #EFF6FF;
+    color: #2563EB;
+    font-weight: 600;
+  }
+  html[data-theme='dark'] .nav-item { color: var(--ink-500); }
+  html[data-theme='dark'] .nav-item:hover { background: rgba(59, 130, 246, 0.12); color: #93C5FD; }
+  html[data-theme='dark'] .nav-item.active { background: rgba(37, 99, 235, 0.20); color: #93C5FD; }
+  /* 深色侧栏（旧主题遗留类）不再使用，但保留映射避免漏改 */
+  .nav-item-dark { @apply relative flex h-11 items-center gap-3 rounded-tile px-5 text-white/80 transition-all duration-200 ease-out; }
+
+  /* ---- 表格：靠背景色差分行，不用边框 ---- */
+  .tbl { @apply w-full border-separate border-spacing-0 text-body; }
+  .tbl thead th {
+    @apply px-4 py-3 text-left text-tiny font-semibold whitespace-nowrap;
+    color: var(--ink-400);
+  }
+  .tbl tbody tr { @apply transition-colors duration-200; }
+  .tbl tbody tr:hover { background: var(--tile-bg); }
+  .tbl tbody td { @apply px-4 py-3 align-middle; }
+  .tbl tbody tr + tr td { box-shadow: inset 0 1px 0 rgba(241, 245, 249, 0.5); }
+
+  /* 骨架屏 */
+  .skeleton {
+    background: linear-gradient(90deg, #EEF2F7 25%, #F8FAFC 50%, #EEF2F7 75%);
+    background-size: 200% 100%;
+    @apply animate-shimmer rounded-lg;
+  }
+  html[data-theme='dark'] .skeleton {
+    background: linear-gradient(90deg, rgba(51,65,85,.4) 25%, rgba(71,85,105,.4) 50%, rgba(51,65,85,.4) 75%);
+    background-size: 200% 100%;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  /* 数字用等宽字形，避免跳动 */
+  .tnum { font-variant-numeric: tabular-nums; }
+}
+
+/* 数字滚动入场动画（大数字上屏时） */
+@keyframes numIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.num-in { animation: numIn 420ms cubic-bezier(0, 0, 0.2, 1) both; }
