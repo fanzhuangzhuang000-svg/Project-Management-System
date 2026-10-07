@@ -55,7 +55,17 @@ const rel = fs.readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'u
 ok(/tags: \['v\*'\]/.test(rel), 'Release 由 v* 标签触发');
 ok(/contents: write/.test(rel), 'Release 申请 contents: write 权限');
 ok(/build-artifacts\.js/.test(rel) && /verify-artifacts\.js/.test(rel), 'Release 先打再校验');
-ok(/-eq 3|-eq 3 \|\||"3 个产物"/.test(rel), 'Release 断言三份产物齐全');
+// 校验的是"三份产物都在"这个语义，不再绑定某一种写法：
+// 要么显式数个数（-eq 3 / 3 个产物），要么逐个按扩展名检查文件存在且非空。
+ok(/-eq 3|"3 个产物"|\*\.exe' '?\*\.zip|missing -eq 0/.test(rel),
+  'Release 断言三份产物齐全');
+// 多行 plain scalar 会被 YAML 折叠成空格分隔的单个字符串，
+// 那不是 glob → 匹配不到文件 → 产物 0 个却一路绿灯。
+// v1.0.0 的 Release 就是这么挂的：path 写成多行 plain scalar。
+ok(/if-no-files-found: error/.test(rel),
+  'Release 产物为空时直接失败（多行 path 被 YAML 折叠的坑）');
+ok(/path:\s*\|/.test(rel),
+  'Release 产物路径用 | 块标量（避免多行 plain scalar 被折叠）');
 ok(/windows-standalone/.test(rel) && /docker\.zip/.test(rel) && /linux\.tar\.gz/.test(rel), 'Release 描述里三个平台都有');
 ok(/fail_on_unmatched_files: true/.test(rel), '附件缺失时直接失败（避免 404 链接）');
 

@@ -70,9 +70,16 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-artifacts
-          path: dist-artifacts/*.exe
-                dist-artifacts/*.zip
-                dist-artifacts/*.tar.gz
+          # 必须用 | 块标量：写成多行 plain scalar 会被 YAML 折叠成
+          # 一个空格分隔的字符串（"a/*.exe a/*.zip a/*.tar.gz"），
+          # 那不是 glob，匹配不到任何文件 —— 而 if-no-files-found 默认
+          # 是 warn 不报错，于是"打包成功"一路绿灯骗过去，
+          # 直到下一个 job download-artifact 才炸。v1.0.0 就这么挂的。
+          path: |
+            dist-artifacts/*.exe
+            dist-artifacts/*.zip
+            dist-artifacts/*.tar.gz
+          if-no-files-found: error
           retention-days: 1
 
   publish:
@@ -88,10 +95,20 @@ jobs:
       - name: 确认三份产物都在
         run: |
           set -e
-          n=$(ls dist-artifacts | wc -l)
-          echo "产物："; ls -la dist-artifacts
-          # 少一份就别发 —— 客户点进去发现下载链接 404 比没有还糟
-          test "$n" -eq 3 || { echo "✗ 期望 3 个产物，实际 $n"; exit 1; }
+          # 数文件而不是数行 —— 空目录也会 ls 出 0 行，
+          # 但"文件存在且非空"才真的是有产物。
+          missing=0
+          for pat in '*.exe' '*.zip' '*.tar.gz'; do
+            f=$(ls -1 dist-artifacts/$pat 2>/dev/null | head -n1 || true)
+            if [ -z "$f" ] || [ ! -s "dist-artifacts/$f" ]; then
+              echo "✗ 缺少产物：dist-artifacts/$pat"
+              missing=1
+            else
+              echo "✓ $f  ($(du -h "dist-artifacts/$f" | cut -f1))"
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "产物清单："; ls -la dist-artifacts
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
