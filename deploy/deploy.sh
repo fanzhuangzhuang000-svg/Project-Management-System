@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 #
 # elv-pms 一键部署（裸机 Linux，不用 Docker）
 #
@@ -89,7 +89,11 @@ TZ=Asia/Shanghai
 #   server.js 认的是 PMS_PORT；早期只读 PMS_PORT，后来为了兼容 docker-compose
 #   补了 PORT，结果 PORT 在 Node 里是保留变量（某些运行时/容器平台会改写它），
 #   两边一起用就会出现「env 里明明写了 8899，程序还在 8787」的情况。
-PMS_PORT=8787
+#
+#   默认 8899 而不是 8787：8787 是 Windows 单机版的固定端口（测试基址 +
+#   客户交付地址），开发机上两套并存时抢端口就是「单机版起不来」。
+#   客户只有裸装这一套时，8899 和 8787 都不冲突。
+PMS_PORT=8899
 
 # ── 数据库 ──
 # 本机 PostgreSQL。密码与下面创建的账号一致。
@@ -153,17 +157,17 @@ systemctl enable --now elv-pms-backup.timer
 # ───────────────────────── 7. 防火墙 ─────────────────────────
 say "开放端口"
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then
-  ufw allow "${PMS_PORT:-8787}/tcp" >/dev/null 2>&1 || true
-  echo "  ufw 已放行 ${PMS_PORT:-8787}/tcp"
+  ufw allow "${PMS_PORT:-8899}/tcp" >/dev/null 2>&1 || true
+  echo "  ufw 已放行 ${PMS_PORT:-8899}/tcp"
 else
-  echo "  未启用 ufw —— 云服务器请在控制台安全组里放行 ${PMS_PORT:-8787}/tcp"
+  echo "  未启用 ufw —— 云服务器请在控制台安全组里放行 ${PMS_PORT:-8899}/tcp"
 fi
 
 # ───────────────────────── 8. 自检 ─────────────────────────
 say "等待服务就绪"
 for i in $(seq 1 40); do
-  if curl -fsS "http://127.0.0.1:${PMS_PORT:-8787}/api/health" >/dev/null 2>&1; then
-    echo "  ✓ 服务正常： http://$(hostname -I | awk '{print $1}'):${PMS_PORT:-8787}"
+  if curl -fsS "http://127.0.0.1:${PMS_PORT:-8899}/api/health" >/dev/null 2>&1; then
+    echo "  ✓ 服务正常： http://$(hostname -I | awk '{print $1}'):${PMS_PORT:-8899}"
     break
   fi
   sleep 1
@@ -179,6 +183,6 @@ echo "    sudo -u elv-pms node /opt/elv-pms/tools/backup.js   手动备份"
 echo "    sudo -u elv-pms node /opt/elv-pms/tools/restore-backup.js   从备份还原"
 echo "    systemctl list-timers elv-pms-backup.timer   看下次自动备份时间"
 echo ''
-echo "  ⚠ 云服务器记得在控制台安全组放行 ${PMS_PORT:-8787}/tcp 端口。"
+echo "  ⚠ 云服务器记得在控制台安全组放行 ${PMS_PORT:-8899}/tcp 端口。"
 echo "    数据库密码在 $ENV_FILE 里（改端口改这个文件，不是改 PORT）。"
 echo ''

@@ -842,6 +842,14 @@ sudo -u elv-pms node /opt/elv-pms/tools/restore-backup.js
    实例重装时系统盘会丢，独立数据盘能保留
 3. **`/etc/elv-pms/elv-pms.env` 权限必须是 600**（里面有数据库密码）
 
+### 端口
+
+默认 `8899`，改法是编辑 `/etc/elv-pms/elv-pms.env` 的 `PMS_PORT` 后 `systemctl restart elv-pms`。
+
+> ⚠️ **本机开发时裸装版用的是 8791，不是默认的 8899** —— 因为开发机上同时跑着
+> 三套环境（单机版 8787 / Docker 专业版 8790 / 裸装版 8791），端口必须错开。
+> 客户部署时用默认值 8899 即可，互不干扰。完整对照表见 `部署检查清单.md`。
+
 ---
 
 ## 十五、目录结构

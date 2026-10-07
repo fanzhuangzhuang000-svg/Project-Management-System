@@ -63,5 +63,20 @@ module.exports = {
   isPg: db.dialect === 'postgres',
   // SQLite 模式下是 pms.db 的路径；PG 模式下是连接串（界面显示用）
   DB_FILE: db.dialect === 'postgres' ? DB_URL : db.file,
+  /**
+   * DB_FILE 的对外安全版本：把连接串里的密码抹掉。
+   *
+   * 为什么需要单独一份：DB_FILE 在 PG 下就是完整的连接串（含明文密码），
+   * 而它被 /api/health 直接回显 —— 而 /api/health 是**未登录就能访问**的
+   * （响应里 needLogin:true 就是证明）。等于任何人都能拿到数据库密码。
+   *
+   * 控制台启动横幅仍然打完整的 DB_FILE：那是运维在自己终端上看的，
+   * 排查连接问题时需要知道连的是哪台。不外泄。
+   */
+  DB_FILE_SAFE: (() => {
+    if (db.dialect !== 'postgres') return db.file;
+    // postgres://user:password@host:5432/db → postgres://user:***@host:5432/db
+    return DB_URL.replace(/(:\/\/[^:/@\s]+:)[^@\s]+(@)/, '$1***$2');
+  })(),
   DB_EXISTED: EXISTED_BEFORE_OPEN,
 };

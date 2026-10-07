@@ -31,6 +31,10 @@ if not exist ".env" (
   exit /b 1
 )
 
+for /f "tokens=2 delims==" %%a in ('findstr /b "PORT=" .env 2^>nul') do set PORT=%%a
+if "%PORT%"=="" set PORT=8787
+for /f "tokens=2 delims==" %%a in ('findstr /b "MINIO_CONSOLE_PORT=" .env 2^>nul') do set MINIO_PORT=%%a
+if "%MINIO_PORT%"=="" set MINIO_PORT=9001
 echo   正在启动（首次启动要下载镜像和初始化数据库，大约 2-5 分钟）...
 echo.
 docker compose up -d
@@ -38,7 +42,7 @@ if errorlevel 1 (
   echo.
   echo   [X] 启动失败。常见原因：
   echo       - Docker Desktop 还没启动完成，等它图标变绿再试
-  echo       - 端口 8787 被占用，改 .env 里的 PORT
+  echo       - 端口被占用，改 .env 里的 PORT
   echo.
   pause
   exit /b 1
@@ -50,7 +54,7 @@ set /a tries=0
 :wait
 set /a tries+=1
 timeout /t 3 /nobreak >nul
-curl -s -o nul http://127.0.0.1:8787/api/health 2>nul
+curl -s -o nul http://127.0.0.1:%PORT%/api/health 2>nul
 if errorlevel 1 (
   if %tries% lss 40 goto wait
   echo   [!] 等太久还没起来，看日志：docker compose logs app
@@ -63,10 +67,8 @@ echo   ============================================================
 echo     启动成功
 echo   ============================================================
 echo.
-for /f "tokens=2 delims==" %%a in ('findstr /b "PORT=" .env 2^>nul') do set PORT=%%a
-if "%PORT%"=="" set PORT=8787
 echo     本机访问：  http://localhost:%PORT%
-echo     管理界面：  http://localhost:9001   （MinIO，看附件用）
+echo     管理界面：  http://localhost:%MINIO_PORT%   （MinIO，看附件用）
 echo.
 echo     停止服务双击  stop.bat
 echo.

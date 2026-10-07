@@ -93,6 +93,11 @@ function runNode (script, args = [], timeout = 900000) {
     ['多租户隔离', 'tenant-test.js'],
     ['专业版集成', 'verify-pro-edition.js'],
     ['AI 助手', 'ai-test.js'], ['React 界面', 'ui-react-test.js'],
+    // 纯静态检查：health 被当成结果对象用，会让启动警告恒亮、
+    // /api/meta 的 ocr.ok 恒为空。属性访问 undefined 不会报错，最易复发。
+    ['识别状态取值', 'ocr-health-usage-test.js'],
+    // /api/health 未登录可达，PG 下 DB_FILE 含明文密码 —— 必须保证回显时已脱敏。
+    ['数据库凭据脱敏', 'db-cred-leak-test.js'],
   ];
   let suitePass = 0, suiteTotal = 0;
   for (const [name, file] of SUITES) {

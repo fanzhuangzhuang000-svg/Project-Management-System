@@ -16,6 +16,8 @@ const driver = require('./db-driver.js');
 
 const DATA_DIR = driver.DATA_DIR;
 const DB_FILE = driver.DB_FILE;
+// 对外回显用：PG 下会抹掉密码。别拿它去连库，只用来显示。
+const DB_FILE_SAFE = driver.DB_FILE_SAFE;
 const DB_EXISTED = driver.DB_EXISTED;
 const db = driver.db;
 
@@ -1847,7 +1849,7 @@ module.exports = {
   dialect: driver.dialect,
   isPg: driver.isPg,
   describeDb: driver.describe,
-  db, DB_FILE, DATA_DIR, init, DB_FILE_NAME: path.basename(DB_FILE),
+  db, DB_FILE, DB_FILE_SAFE, DATA_DIR, init, DB_FILE_NAME: path.basename(DB_FILE),
   // 连接串要透出去：pg_dump / pg_restore 这类外部工具必须用它。
   // 之前没导出，restore-backup.js 里 dbf.DB_URL 是 undefined，
   // pg_restore 收到 -d undefined 就退回 Unix socket + 当前 OS 用户，

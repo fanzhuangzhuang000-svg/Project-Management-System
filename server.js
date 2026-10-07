@@ -529,7 +529,7 @@ async function handleApi (req, res, url) {
   const method = req.method.toUpperCase();
 
   if (head === 'health') {
-    return sendJSON(res, 200, { ok: true, app: APP_NAME, version: VERSION, db: dbf.DB_FILE, time: dbf.nowISO(), needLogin: true, settings: publicSettings() });
+    return sendJSON(res, 200, { ok: true, app: APP_NAME, version: VERSION, db: dbf.DB_FILE_SAFE, time: dbf.nowISO(), needLogin: true, settings: publicSettings() });
   }
 
   // ---------------- 登录 / 会话 ----------------
@@ -680,7 +680,7 @@ async function handleApi (req, res, url) {
       app: APP_NAME, version: VERSION,
       tables: TABLES, order: TABLE_ORDER,
       options: dbf.refOptions(),
-      dbFile: dbf.DB_FILE,
+      dbFile: dbf.DB_FILE_SAFE,
       dataDir: dbf.DATA_DIR,
       port: PORT,
       lan: lanAddresses(),
@@ -691,7 +691,17 @@ async function handleApi (req, res, url) {
         ocrExt: attach.OCR_EXT.slice(),
         attachDir: attach.ATTACH_DIR,
       },
-      ocr: { ok: ocrHealth.ok, engine: ocrHealth.engine, label: ocrHealth.label || ocrHealth.reason || describeOcrBackend(), langs: ocrHealth.langs, hint: ocrHealth.hint },
+      // ⚠️ 必须调用 ocrHealth()：require 时拿到的是**函数**本身，不是探测结果。
+      //    直接读 ocrHealth.ok 会得到 undefined，表现为「识别功能不可用」
+      //    的警告永远出现、/api/meta 里 ocr.ok 恒为空。
+      ocr: (() => {
+        const h = ocrHealth();
+        return {
+          ok: h.ok, engine: h.engine,
+          label: h.label || h.reason || describeOcrBackend(),
+          langs: h.langs, hint: h.hint,
+        };
+      })(),
     });
   }
 
@@ -765,7 +775,7 @@ async function handleApi (req, res, url) {
     for (const t of TABLE_ORDER) counts[t] = dbf.db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n;
     counts.attachments = dbf.db.prepare('SELECT COUNT(*) n FROM attachments').get().n;
     return sendJSON(res, 200, {
-      dbFile: dbf.DB_FILE,
+      dbFile: dbf.DB_FILE_SAFE,
       // 数据库版本：客户报问题时让他截图这个就够了（之前算好了却没放进响应，白算）
       dbVersion: migInfo ? migInfo.current : null,
       dbVersionLatest: migInfo ? migInfo.latest : null,
@@ -1718,8 +1728,12 @@ server.listen(PORT, HOST, () => {
   console.log('  数据库:     ' + dbf.DB_FILE);
   console.log('  附件目录:   ' + attach.ATTACH_DIR);
   console.log('  备份目录:   ' + bk.BACKUP_DIR + (autoBackup && autoBackup.ok ? '  (今日已自动备份)' : ''));
-  console.log('  识别引擎:   ' + (ocrHealth.label || ocrHealth.reason || describeOcrBackend() || '未知') + '，支持 PDF / 图片');
-  if (!ocrHealth.ok) console.log('               ⚠ ' + (ocrHealth.hint || '识别功能不可用，请检查引擎安装'));
+  // 同上：ocrHealth 是函数，要调用才有结果。
+  {
+    const h = ocrHealth();
+    console.log('  识别引擎:   ' + (h.label || h.reason || describeOcrBackend() || '未知') + '，支持 PDF / 图片');
+    if (!h.ok) console.log('               ⚠ ' + (h.hint || '识别功能不可用，请检查引擎安装'));
+  }
   // 写入模式只在 SQLite 下有意义 —— PG 有自己的 WAL 和崩溃恢复机制，
 // 照抄这句话会让人以为 PG 也在用 synchronous=FULL（其实那是 SQLite 的 PRAGMA）。
 console.log('  写入模式:   ' + (dbf.dialect === 'postgres'

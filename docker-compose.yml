@@ -111,7 +111,9 @@ services:
       PMS_BACKUP_DIR: /app/backup
       TZ: Asia/Shanghai
     ports:
-      - "${PORT:-8787}:8787"
+      # 兜底值是 8790 而不是 8787：8787 留给 Windows 单机版（测试基址 + 交付地址）。
+      # 开发机上三套并存时，专业版抢 8787 会让单机版直接起不来。
+      - "${PORT:-8790}:8787"
     volumes:
       - ./data/app:/app/data
       - ./backup:/app/backup
