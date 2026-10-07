@@ -64,7 +64,9 @@ node tools/verify-artifacts.js           # 校验包里东西齐全
 
 ### 方式一：安装版（推荐，不用装 Node）
 
-双击 **`dist-installer\弱电项目管理系统-安装程序.exe`**，一路「下一步」就行。
+双击 **`elv-pms-1.0.0-windows-standalone.exe`**（从 [Releases](../../releases) 下载，约 32 MB），一路「下一步」就行。
+
+> 开发者注：本仓库内 `node tools\build-artifacts.js` 打出的原始文件叫 `dist-installer\弱电项目管理系统-安装程序.exe`，发布到 Release 时重命名为上面的 `elv-pms-*-windows-standalone.exe`。
 
 安装包 32 MB，**已经带好了 Node 运行环境**，目标电脑不需要另外装任何东西。
 
@@ -951,7 +953,6 @@ elv-pms\
 │   ├── make-icon.js        纯 Node 手绘生成安装包图标（自编码 PNG/ICO，无外部依赖）
 │   ├── build-installer.js  打安装包：暂存 → 压缩 → 编译并内嵌
 │   ├── verify-installer.js 安装包端到端验证（42 项：装→跑→卸→查数据）
-│   ├── legacy-vanilla\     旧版前端测试（针对已废弃的原生 DOM，仅作留档）
 │   ├── shot-react.js       登录后逐页截图（人工核对界面用）
 │   ├── test-auth.js        测试用登录辅助（自动建临时管理员）
 │   ├── reset-admin.js      忘记密码时重置管理员密码
@@ -1316,7 +1317,7 @@ node tools\ocr-selftest.js <文件>                            :: 对任意 PDF/
 
 > 测试会创建一个临时管理员账号 testadmin（密码每次随机、只存在内存里），跑完可以到「成员管理」里删掉，不影响真实的 admin。
 > 测试全部从 127.0.0.1 发起，`test-auth.js` 会在开跑前清掉登录失败计数，避免用例之间互相锁死。
-> 旧版原生前端的两个测试已归档到 `tools\legacy-vanilla\`，它们针对的是已被替换掉的 DOM，不再参与测试。
+> 旧版原生前端的两个测试（`ui-attach-test.js`、`ui-smoke-test.js`）针对已被替换的 DOM，已于审计清理中删除（原 `tools\legacy-vanilla\`，66.8 KB 死代码）。
 
 ### 权限模型（v1.1 加固）
 

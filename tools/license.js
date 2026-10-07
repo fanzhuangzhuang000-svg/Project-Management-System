@@ -39,7 +39,7 @@ const crypto = require('node:crypto');
  * 已从可猜测的默认值换成随机值 —— 授权粒度变粗（可为任意公司签发码）之后，
  * 密钥泄露的后果严重了一个量级。
  */
-const DEFAULT_SECRET = 'elv-n5IJk_9zXuocU89ktPWINEV1a6MyJx4BHyyLBEV-DL8';
+const DEFAULT_SECRET = 'elv-evEslMhNn6xMdXA6GTC5fYJuANvNL_2O67trKLIRPkSa4exTPt4E7g';
 const SECRET = process.env.PMS_LICENSE_SECRET || DEFAULT_SECRET;
 /** 现在用的是不是内置默认密钥（启动时据此警告） */
 const USING_DEFAULT_SECRET = !process.env.PMS_LICENSE_SECRET;
