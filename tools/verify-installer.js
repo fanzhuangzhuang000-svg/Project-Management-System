@@ -19,7 +19,9 @@ const ROOT = path.join(__dirname, '..');
 const SETUP_SRC = path.join(ROOT, 'dist-installer', '弱电项目管理系统-安装程序.exe');
 const SETUP = path.join(os.tmpdir(), 'setup-verify.exe');
 const DIR = path.join(os.tmpdir(), 'ELV-PMS-verify');
-const PORT = 8791;
+// 高位端口：避开三套运行时的 8787/8790/8791。Windows 的 SO_REUSEADDR 允许
+// 第二个进程在同一个端口上 bind 成功，结果是测试随机打到别人身上（见 verify-installed.js 注释）。
+const PORT = Number(process.env.PMS_VERIFY_PORT || 18791);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const results = [];

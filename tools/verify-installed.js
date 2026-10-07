@@ -14,12 +14,51 @@ const os = require('node:os');
 const { spawnSync, spawn } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
-const SETUP = path.join(ROOT, process.env.PMS_INSTALLER_OUT || 'dist-installer-new', '弱电项目管理系统-安装程序.exe');
+// ⚠️ 默认读 dist-installer（打安装包脚本的默认输出），不是 dist-installer-new。
+//   以前这里写着 'dist-installer-new' —— 那是某次调试留下的目录名，
+//   没人同步维护，于是**验证的永远是两天前打的旧包**，代码改了它也不变。
+//   症状：授权两项红，因为旧包里的 license.js 还是旧签名密钥、只认 ELV1，
+//   而测试用仓库里的 license.js 生成 ELV3 的码 —— 旧包当然认不出来。
+//   教训：验证脚本必须指向**默认产物目录**，不能指向任何带 -new/-old 的副本。
+const SETUP = path.join(ROOT, process.env.PMS_INSTALLER_OUT || 'dist-installer', '弱电项目管理系统-安装程序.exe');
 const TMP = path.join(os.tmpdir(), 'setup-elv-verify.exe');
 const DIR = path.join(os.tmpdir(), 'ELV-PMS-verify2');
-const PORT = 8790;
+/**
+ * 端口必须是**高位且空闲**的，不能用 8790 这类运行时端口。
+ *
+ * 踩过的坑：三套环境的端口固定在 8787 / 8790 / 8791，而本脚本原本就用 8790。
+ * Windows 上 socket 默认带 SO_REUSEADDR，**第二个进程照样能 bind 成功**
+ * （不像 Linux 会直接 EADDRINUSE）。于是本脚本起的实例和 Docker 实例
+ * 同时"在" 8790 上，请求发给谁取决于系统监听表 —— 测试结果随机翻转，
+ * 而且更糟的是它可能一直在测**根本没装的那个** Docker 实例。
+ * 所以这里选 18790 这种不会与任何运行时端口撞的高位段，并做前置断言。
+ */
+const PORT = Number(process.env.PMS_VERIFY_PORT || 18790);
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * 端口必须空闲 —— 被占用就直接退出，绝不"将就着跑"出一个假绿/假红。
+ *
+ * ⚠ 这里**不能用 net.createServer().listen() 来探测**，我第一版就是这么写的，
+ *   结果守卫自己失效了：Windows 的 socket 默认带 SO_REUSEADDR，
+ *   listen(PORT) 在端口已被别人占着时**照样成功**（Linux 会直接 EADDRINUSE）。
+ *   实测：Docker 占着 8790 时，listen(8790) 返回成功，守卫放行，
+ *   测试于是照样打到 Docker 上跑完，显示 26/26 全绿 —— 假绿。
+ *
+ * 正确判据是「能不能连上去」：真被占用的端口，TCP 连接一定被接受。
+ */
+async function assertPortFree () {
+  const net = require('node:net');
+  const inUse = await new Promise(resolve => {
+    const s = net.connect({ port: PORT, host: '127.0.0.1' });
+    const done = (v) => { try { s.destroy() } catch { /* 已断开 */ } resolve(v) };
+    s.setTimeout(1500, () => done(false));   // 连不上 = 空闲
+    s.once('connect', () => done(true));     // 连上了 = 有人在听
+    s.once('error', () => done(false));      // 拒绝 = 空闲
+  });
+  return inUse;
+}
 
 const results = [];
 const check = (n, ok, x = '') => {
@@ -36,8 +75,22 @@ const killInstalled = () => ps(`Get-Process node -ErrorAction SilentlyContinue |
 
 (async () => {
   if (!fs.existsSync(SETUP)) throw new Error('安装包不存在：' + SETUP);
+
+  // 前置断言：端口必须空闲。
+  // 不加这条的后果不是"测试失败"，而是**测试结果随机翻转** —— 详见上面 PORT 的注释。
+  const busy = await assertPortFree();
+  if (busy) {
+    console.error(`\n  ✗ 端口 ${PORT} 已被占用，验证必须用空闲端口。`);
+    console.error(`    三套环境固定占用 8787 / 8790 / 8791 —— 别拿它们的端口来跑验证。`);
+    console.error(`    先关掉占用者，或用 PMS_VERIFY_PORT=<其他端口> 换端口。\n`);
+    process.exit(2);
+  }
+
   console.log('  装机验证');
   console.log('  ' + '='.repeat(56));
+  console.log(`  验证对象：${SETUP}`);
+  console.log(`  构建时间：${fs.statSync(SETUP).mtime.toLocaleString('zh-CN')}`);
+  console.log(`  端口：${PORT}（已确认空闲）`);
 
   try { if (fs.existsSync(DIR)) run(path.join(DIR, '卸载.exe'), ['/silent', '/dir=' + DIR]) } catch { /* 忽略 */ }
   killInstalled();
@@ -66,6 +119,30 @@ const killInstalled = () => ps(`Get-Process node -ErrorAction SilentlyContinue |
     fs.existsSync(path.join(DIR, 'app', 'tools', 'pdfjs', 'pdf.min.mjs')));
   check('生成工具没有打包（只给卖软件的人）',
     !fs.existsSync(path.join(DIR, 'app', 'tools', 'gen-license.js')));
+
+  console.log('\n[2b] 包里的代码 == 仓库里的代码吗（防「验了个旧包」）');
+  // 这一组是本次事故的直接教训：授权两项红了，真实原因不是授权有 bug，
+  // 而是**验证脚本一直在装两天前打的旧包**（dist-installer-new），
+  // 旧包里的 license.js 还是老密钥 + 只认 ELV1，测试拿仓库里的新模块签 ELV3，
+  // 自然对不上。装一次包要 30 秒，光看红字很难想到"包是旧的"。
+  // 所以这里**逐个比对内容**：只要仓库改过而包里没跟上，立刻报出来。
+  {
+    const runtimeFiles = ['tools/license.js', 'db-driver.js', 'server.js'];
+    const stale = [];
+    for (const rel of runtimeFiles) {
+      const inPkg = path.join(DIR, 'app', rel);
+      if (!fs.existsSync(inPkg)) { stale.push(`${rel}（缺失）`); continue }
+      const a = fs.readFileSync(inPkg);
+      const b = fs.readFileSync(path.join(ROOT, rel));
+      if (!a.equals(b)) stale.push(rel);
+    }
+    check('★ 包内代码与仓库一致（不是旧包）', stale.length === 0,
+      stale.length ? '不一致：' + stale.join(', ') : '');
+    if (stale.length) {
+      console.log('    → 说明安装包没重新打。跑 `node tools/build-installer.js` 再验。');
+      console.log('    → 若刚打完仍不一致，检查 .gitignore / 打包清单是否漏了这些文件。');
+    }
+  }
 
   console.log('\n[3] 启动');
   killInstalled();

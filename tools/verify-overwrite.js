@@ -15,10 +15,13 @@ const os = require('node:os');
 const { spawnSync, spawn } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
-const SETUP_SRC = path.join(ROOT, process.env.PMS_INSTALLER_OUT || 'dist-installer-new', '弱电项目管理系统-安装程序.exe');
+// 同 verify-installed.js：必须指向打包脚本的默认产物目录，不要指向 -new 副本，
+// 否则验的是某个历史包（本项目因此把"授权有 bug"误判了很久）。
+const SETUP_SRC = path.join(ROOT, process.env.PMS_INSTALLER_OUT || 'dist-installer', '弱电项目管理系统-安装程序.exe');
 const SETUP = path.join(os.tmpdir(), 'setup-overwrite.exe');
 const DIR = path.join(os.tmpdir(), 'ELV-PMS-overwrite');
-const PORT = 8797;
+// 高位端口，避开运行时端口（Windows SO_REUSEADDR 会让两个进程同时"在"一个端口上）
+const PORT = Number(process.env.PMS_VERIFY_PORT || 18797);
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
