@@ -68,6 +68,12 @@ ok(/path:\s*\|/.test(rel),
   'Release 产物路径用 | 块标量（避免多行 plain scalar 被折叠）');
 ok(/windows-standalone/.test(rel) && /docker\.zip/.test(rel) && /linux\.tar\.gz/.test(rel), 'Release 描述里三个平台都有');
 ok(/fail_on_unmatched_files: true/.test(rel), '附件缺失时直接失败（避免 404 链接）');
+// ★ download-artifact@v4 默认给产物里的每个文件各建一个同名子目录，
+// 于是文件落在 dist-artifacts/release-artifacts/x.exe，而上面的检查按
+// dist-artifacts/*.exe 找，三个 glob 全部匹配不到 → 明明有 36MB 产物
+// 却报"缺少产物"。v1.0.0 的第二个 run 就这么挂的。
+ok(/merge-multiple:\s*true/.test(rel),
+  'Release 下载产物时平铺目录（download-artifact@v4 默认会建子目录）');
 
 console.log('\n' + '═'.repeat(52));
 // 必须输出「N / M 项通过」——run-all.js 靠这个正则判定成败，

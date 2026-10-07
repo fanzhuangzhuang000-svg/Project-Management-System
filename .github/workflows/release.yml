@@ -91,20 +91,29 @@ jobs:
         with:
           name: release-artifacts
           path: dist-artifacts
+          # 必须加：download-artifact@v4 给产物里的每个文件各建一个同名
+          # 子目录，于是文件落在 dist-artifacts/release-artifacts/x.exe，
+          # 下面的检查按 dist-artifacts/*.exe 找，三个 glob 全都匹配不到 ——
+          # 明明有 36MB 产物却报"缺少产物"。merge-multiple 平铺回
+          # dist-artifacts/。
+          merge-multiple: true
 
       - name: 确认三份产物都在
         run: |
           set -e
-          # 数文件而不是数行 —— 空目录也会 ls 出 0 行，
-          # 但"文件存在且非空"才真的是有产物。
+          # 用 glob 展开（compgen/数组）取匹配，不要 `ls | head -n1`：
+          # 后者在 ls 失败时被 || true 吞掉，把"目录层级不对"和"真的
+          # 没产物"报成同一个错，排查时被误导过。
           missing=0
           for pat in '*.exe' '*.zip' '*.tar.gz'; do
-            f=$(ls -1 dist-artifacts/$pat 2>/dev/null | head -n1 || true)
-            if [ -z "$f" ] || [ ! -s "dist-artifacts/$f" ]; then
+            # shellcheck disable=SC2206
+            matches=(dist-artifacts/$pat)
+            f="${matches[0]:-}"
+            if [ -z "$f" ] || [ ! -s "$f" ]; then
               echo "✗ 缺少产物：dist-artifacts/$pat"
               missing=1
             else
-              echo "✓ $f  ($(du -h "dist-artifacts/$f" | cut -f1))"
+              echo "✓ $f  ($(du -h "$f" | cut -f1))"
             fi
           done
           [ "$missing" -eq 0 ] || exit 1
