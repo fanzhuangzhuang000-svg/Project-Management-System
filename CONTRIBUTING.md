@@ -51,9 +51,10 @@ npm test
 | `ai-test.js` | 真实 AI 密钥（另有一处依赖 `contract.pdf`） |
 | `reseed-atomic-test.js` | 与素材无关（见下） |
 
-`reseed-atomic-test.js` 的失败是**另一个问题**：它断言示例数据重播后
-「材料 12 条」，实测重播得到 13 条 —— 说明"清空再重建"不是幂等的。
-这是真 bug，不是因为缺素材。
+`reseed-atomic-test.js` 在干净克隆上被 CI 跳过，**不是因为缺素材**——它压的是
+`/api/demo/seed` 反复重建的并发一致性，**需要服务全程在跑**（CI 的 GitHub Actions
+runner 服务进程生命周期复杂，曾被观察到测试打到了别的实例上）。在本地与服务
+同端口跑是正常的（材料数稳定在 12，读不到 0 也不累积 13）。
 
 ```bash
 # 导入用的表格类素材，脚本能生成
