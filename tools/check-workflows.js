@@ -41,6 +41,16 @@ ok(/build-artifacts\.js/.test(ci), 'CI 调 build-artifacts.js');
 ok(/verify-artifacts\.js/.test(ci), 'CI 调 verify-artifacts.js');
 ok(/runs-on: windows-latest/.test(ci), 'CI 跑在 windows-latest（装机验证/OCR/csc 只在 Windows 成立）');
 
+// ★ 分支名必须与仓库实际用的一致。
+// 踩过的坑：workflow 写 branches: [main]，而仓库默认分支是 master，
+// 结果 push 到 master 时 CI **静默不触发** —— 没有红灯，只是从来没跑过。
+const { spawnSync: sp } = require('node:child_process');
+const cur = sp('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+const branch = (cur.stdout || '').trim();
+const brBlock = /branches:\s*\[([^\]]+)\]/.exec(ci);
+ok(!!brBlock && branch && brBlock[1].includes(branch),
+  `CI 监听当前分支 ${branch || '?'}（branches: [${brBlock ? brBlock[1] : '未找到'}]）`);
+
 const rel = fs.readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8');
 ok(/tags: \['v\*'\]/.test(rel), 'Release 由 v* 标签触发');
 ok(/contents: write/.test(rel), 'Release 申请 contents: write 权限');

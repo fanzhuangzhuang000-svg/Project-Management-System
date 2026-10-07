@@ -10,7 +10,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [master, main]   # 本仓库实际用 master
   pull_request:
   workflow_dispatch:
 
