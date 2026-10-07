@@ -15,6 +15,51 @@ Linux 上另需系统包：`apt install tesseract-ocr tesseract-ocr-chi-sim popp
 
 ---
 
+## 零、我该下载哪个？
+
+**三套是同一份程序的三种运行方式，功能完全一致。** 按你的情况选一个：
+
+| 你的情况 | 选 | 下载 | 默认端口 | 需要装什么 |
+|---|---|---|---|---|
+| **一台 Windows 电脑，自己用** | 单机版 | `elv-pms-*-windows-standalone.exe` | **8787** | 什么都不用（自带 Node 运行时） |
+| **局域网多人共用 / 一台常开的机器** | Docker 专业版 | `elv-pms-*-docker.zip` | **8790** | Docker Desktop |
+| **自己的 Linux 服务器** | Linux 裸装版 | `elv-pms-*-linux.tar.gz` | **8899** | Node 22 + PostgreSQL（脚本自动装） |
+
+去 [Releases 页面](https://github.com/fanzhuangzhuang000-svg/Project-Management-System/releases) 只下你那一行对应的文件即可。
+
+> ⚠️ **三套的数据互不相通。** 端口不同是为了让它们能在同一台机器上并存，但库是三个独立的
+> 数据库（单机版 SQLite、Docker 容器 PostgreSQL、Linux PostgreSQL）。
+> 换环境**不会**带走数据 —— 要换请先在旧环境里备份，再到新环境恢复。
+
+**三套怎么并存**：三套可以同时开在开发机上（端口 8787 / 8790 / 8899 各不冲突），
+但它们**各写各的库**，别指望数据互通。正式用的时候通常只开一套。
+
+<details>
+<summary>从源码跑（开发者）</summary>
+
+```bash
+git clone https://github.com/fanzhuangzhuang000-svg/Project-Management-System.git
+cd Project-Management-System
+npm install
+node server.js          # http://127.0.0.1:8787
+```
+
+前端改动后需要重新构建：`cd web && npm install && npm run build`。
+仓库里的 `public/` 是**已构建好的产物**（clone 下来即可运行），但它是编译输出，
+和 `web/src` 是否一致由 CI 保证。
+
+打三平台交付包：
+
+```bash
+node tools/build-artifacts.js            # 三个平台的包
+node tools/build-artifacts.js windows    # 只打某一个
+node tools/verify-artifacts.js           # 校验包里东西齐全
+```
+
+</details>
+
+---
+
 ## 一、怎么启动
 
 ### 方式一：安装版（推荐，不用装 Node）

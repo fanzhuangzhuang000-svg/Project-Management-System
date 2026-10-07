@@ -35,12 +35,25 @@ npm test
 ### ⚠️ 第一次 clone：先准备测试素材
 
 `tools/fixtures/` 里的素材**不入 Git**（是真实合同的扫描件与导出文件，不能进版本历史），
-所以新克隆的仓库直接 `npm test` 会有 4 个测试因找不到素材而报错：
+所以新克隆的仓库直接 `npm test` 会有测试因找不到素材而报错。
 
-- `import-test.js`
-- `ocr-chain-test.js`
-- `ui-react-test.js`
-- `ocr-selftest.js`
+**实测（干净克隆、服务与测试同端口）跑不起来的 9 个套件**：
+
+| 套件 | 缺什么 |
+|---|---|
+| `batch-test.js` | `fixtures/contract.pdf` |
+| `import-test.js` | `fixtures/import-*.xlsx/csv` |
+| `features-test.js` | `fixtures/contract.pdf` |
+| `ocr-chain-test.js` | `fixtures/contract.pdf` |
+| `ui-react-test.js` | `fixtures/contract.pdf`、`contract-scan.jpg` |
+| `verify-installed.js` | `fixtures/invoice.pdf` + 先产出安装包 exe |
+| `verify-pro-edition.js` | 真实 PG + MinIO 栈 |
+| `ai-test.js` | 真实 AI 密钥（另有一处依赖 `contract.pdf`） |
+| `reseed-atomic-test.js` | 与素材无关（见下） |
+
+`reseed-atomic-test.js` 的失败是**另一个问题**：它断言示例数据重播后
+「材料 12 条」，实测重播得到 13 条 —— 说明"清空再重建"不是幂等的。
+这是真 bug，不是因为缺素材。
 
 ```bash
 # 导入用的表格类素材，脚本能生成
@@ -50,18 +63,38 @@ python tools/fixtures/make-fixtures.py
 # 字段期望值见 tools/fixtures/README.md
 ```
 
-其余测试（单元、权限、授权、多租户、备份还原、迁移）**不依赖素材，正常跑**。
-细节见 [tools/fixtures/README.md](tools/fixtures/README.md)。
+其余 15 个套件（单元、权限、授权、多租户、备份还原、迁移、凭据脱敏…）
+**不依赖素材，正常跑**。细节见 [tools/fixtures/README.md](tools/fixtures/README.md)。
 
-如果改了前端，额外需要：
+### CI 里跑什么
+
+GitHub Actions 跑的是：
 
 ```bash
-cd web && npx tsc --noEmit
+PMS_CI=1 node tools/run-all.js --ci
 ```
 
-**测试不是形式**。这个项目里多数历史 bug 都是"在真实环境跑一遍才暴露"——
-比如 Windows OCR 和 Linux Tesseract 的中文通道参数不同，
-只有真拿扫描件跑才知道哪个参数是对的。
+它会**跳过**上面那 9 个套件（跳过清单在 `tools/run-all.js` 的 `CI_SKIP`，
+每一条都注明了跳过原因），只跑能在干净克隆上真正跑起来的那 15 个。
+所以**推上去的 CI 是绿的，不代表全量回归是绿的** —— 素材相关的回归要靠本地有素材时手动跑。
+
+恢复某个套件（比如素材改成脱敏件入库）时，从 `CI_SKIP` 里删掉对应行即可。
+
+## 打交付包
+
+```bash
+node tools/build-artifacts.js            # 三平台全打
+node tools/build-artifacts.js windows    # 只打某一个（windows / docker / linux）
+node tools/verify-artifacts.js           # 校验包里东西齐全
+```
+
+产物在 `dist-artifacts/`（已 gitignore），发布时由 `.github/workflows/release.yml`
+在 `v*` 标签上自动挂到 Release。
+
+> 打包脚本靠扫描 `require` 语句推后端需要哪些文件，**扫不到条件分支里的懒加载**。
+> `tools/ocr-tesseract.js` 就是这种（`ocr.js` 里只在 Linux 路径下 require 它），
+> 所以它在 `TOOL_EXTRA` 里显式列出。**加新的条件加载模块时要同步加进去**，
+> 否则只在某个平台上炸——漏进 Linux 包时表现为"服务起不来/识别用不了"。
 
 ## 端口
 
@@ -74,6 +107,38 @@ PMS_PORT=8801 PMS_DATA_DIR=./data-test npm start
 ```
 
 ⚠️ 变量名写错**不会报错**，只会静默用默认 8787，然后撞端口。
+
+### ⚠️ 服务端和测试进程必须共享同一组变量
+
+跑测试时 **`PMS_PORT` / `PMS_DATA_DIR` / `PMS_BASE` 要同时给服务端和测试进程**：
+
+```bash
+PMS_PORT=8899 PMS_DATA_DIR=./data-test PMS_BASE=http://127.0.0.1:8899 \
+  node server.js &
+PMS_PORT=8899 PMS_DATA_DIR=./data-test PMS_BASE=http://127.0.0.1:8899 \
+  node tools/run-all.js
+```
+
+**为什么必须一致**：`tools/test-auth.js` 是**直接改本地数据库**来准备管理员账号的
+（`require('../auth.js')`），它操作的是"测试进程自己的 `PMS_DATA_DIR`"；
+而测试发 HTTP 请求打的是 `PMS_BASE`。两边不一致 = 测试写 A 库、请求打 B 库，
+表现是**大面积莫名失败**（实测 24 个套件里 15 个假红），而且报错完全看不出根因。
+
+## 三套环境的默认端口
+
+同一台机器上三套可以并存，端口刻意分开了：
+
+| 环境 | 端口 | 库 |
+|---|---|---|
+| Windows 单机版 | 8787 | SQLite `data/pms.db` |
+| Docker 专业版 | 8790 | 容器内 PostgreSQL |
+| Linux 裸装版 | 8899 | 独立 PostgreSQL |
+
+⚠️ 8787 被单机版占着是因为它是测试基址 + 交付给客户的默认地址，
+所以**专业版抢 8787 会让单机版直接起不来** —— 这也是 `docker-compose.yml`
+的 `PORT` 兜底值是 8790 而不是 8787 的原因。
+
+⚠️ 三套**数据互不相通**，是三个独立的库。
 
 ## 改数据库结构
 
@@ -101,7 +166,7 @@ attachments.js 的子表枚举漏了 schedules，导致挂在收付款计划节�
 - `data/`（客户业务数据、扫描件原件）
 - `backup/`（整库快照）
 - `data-pgtest*` / `_probe_data*`（验证时的临时库）
-- 安装包 `dist-installer/`（走 Release 挂附件）
+- 安装包 `dist-installer/`、交付包 `dist-artifacts/`（走 Release 挂附件）
 
 **已经推上去又发现泄密了？** 单纯 `git rm` 没用——历史提交里还在。
 需要 rotate 密钥（改密码）**加** 重写历史。见 [SECURITY.md](SECURITY.md)。

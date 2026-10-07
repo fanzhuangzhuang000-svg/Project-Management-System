@@ -59,6 +59,9 @@ public-legacy/
 # ══════════════════════════════════════════════════════════════
 dist-installer/
 dist-installer-new/
+# tools/build-artifacts.js 的输出：三平台交付包（exe 32MB + 两个压缩包）
+# 绝不能进历史 —— 每次打包都变，进了会永久撑大仓库。
+dist-artifacts/
 screenshots/
 
 # ══════════════════════════════════════════════════════════════

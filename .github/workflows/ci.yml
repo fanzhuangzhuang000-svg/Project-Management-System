@@ -1,0 +1,64 @@
+name: CI
+
+# 每次推送和 PR 都跑。
+# 跑的是 tools/run-all.js --ci：跳过 9 个"干净克隆跑不起来"的套件（原因见
+# run-all.js 里 CI_SKIP 的注释），剩下的必须全绿。
+#
+# 为什么需要它：这套系统三套环境（Windows 单机 / Docker / Linux 裸装）
+# 之前全靠本机手工验证，改完代码没人拦。而"本机有夹具素材、CI 没有"
+# 正是最容易漏的一类回归。
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 验证（Windows）
+    # Windows 是主力交付平台，装机验证、OCR 后端、csc 打包都只在 Windows 成立
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+
+      - name: 前端依赖
+        run: npm ci --no-audit --no-fund
+        working-directory: web
+
+      # public/ 已入库，所以不构建也能跑起来。构建一次是为了同时验证两件事：
+      #   1) tsc 类型检查过（前端有类型错误就该拦住）
+      #   2) public/ 与 web/src 一致（它是编译产物，不一致说明有人改了源码没重建）
+      - name: 构建前端
+        working-directory: web
+        run: npm run build
+
+      - name: 跑验证
+        env:
+          PMS_CI: '1'
+        run: node tools/run-all.js --ci http://127.0.0.1:8787
+
+      - name: 打交付包（三平台）
+        run: node tools/build-artifacts.js
+
+      - name: 校验交付包内容
+        run: node tools/verify-artifacts.js
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elv-pms-artifacts
+          path: dist-artifacts/*
+          retention-days: 7

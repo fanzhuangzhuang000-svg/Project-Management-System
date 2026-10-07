@@ -1,0 +1,123 @@
+name: Release
+
+# 打 v* 标签时触发：一次产出三个平台的包，发布成一个 Release。
+# 客户去 Releases 页面只下自己那一套，不用把三份都拖走。
+#
+# 为什么用标签触发而不是手动点：
+#   手动发布最常见的翻车是"改了代码忘了重新打包"——
+#   标签是对某个 commit 的不可变引用，产物和标签必然指向同一份代码。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的标签（手动触发时填，例如 v1.0.0）'
+        required: true
+
+permissions:
+  contents: write      # 要能创建 Release
+
+jobs:
+  build:
+    name: 打三个平台的包
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+
+      - name: 前端依赖
+        run: npm ci --no-audit --no-fund
+        working-directory: web
+
+      - name: 取出版本号
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          # 标签形如 v1.0.0 → 1.0.0；标签不是 v* 时用 package.json 兜底
+          if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 打交付包
+        env:
+          PMS_VERSION: ${{ steps.ver.outputs.version }}
+        run: node tools/build-artifacts.js
+
+      - name: 校验交付包
+        env:
+          PMS_VERSION: ${{ steps.ver.outputs.version }}
+        run: node tools/verify-artifacts.js
+
+      - name: 列出产物
+        run: dir dist-artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist-artifacts/*.exe
+                dist-artifacts/*.zip
+                dist-artifacts/*.tar.gz
+          retention-days: 1
+
+  publish:
+    name: 发布 Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist-artifacts
+
+      - name: 确认三份产物都在
+        run: |
+          set -e
+          n=$(ls dist-artifacts | wc -l)
+          echo "产物："; ls -la dist-artifacts
+          # 少一份就别发 —— 客户点进去发现下载链接 404 比没有还糟
+          test "$n" -eq 3 || { echo "✗ 期望 3 个产物，实际 $n"; exit 1; }
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: 弱电项目管理系统 ${{ inputs.tag || github.ref_name }}
+          body: |
+            ## 我该下载哪个？
+
+            | 你的情况 | 下载 |
+            |---|---|
+            | **一台 Windows 电脑，自己用** | `elv-pms-*-windows-standalone.exe` — 双击安装，自带运行环境，不用装 Node |
+            | **局域网多人共用 / 服务器** | `elv-pms-*-docker.zip` — 装 Docker Desktop 后解压运行 |
+            | **自己的 Linux 服务器** | `elv-pms-*-linux.tar.gz` — `sudo bash deploy/deploy.sh` |
+
+            > 三套是**同一份程序的三种运行方式**，功能一致，**数据互不相通**。
+            > 换环境不会带走数据，需要自己备份/迁移。
+
+            ### 默认端口
+            - Windows 单机版 `8787`（测试基址，固定）
+            - Docker 专业版 `8790`
+            - Linux 裸装版 `8899`
+
+            详细说明见仓库 README。
+          files: |
+            dist-artifacts/*.exe
+            dist-artifacts/*.zip
+            dist-artifacts/*.tar.gz
+          fail_on_unmatched_files: true

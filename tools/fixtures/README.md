@@ -23,17 +23,33 @@
 
 ## 没素材会怎样
 
-`npm test` 里 14 个测试引用本目录，其中 **4 个没有缺文件兜底**：
+在**干净克隆**上实测（服务与测试同端口、同 `PMS_DATA_DIR`），
+24 个套件里 **15 个通过、9 个跑不起来**：
 
-- `import-test.js`
-- `ocr-chain-test.js`
-- `ui-react-test.js`
-- `ocr-selftest.js`
+| 套件 | 缺什么 |
+|---|---|
+| `batch-test.js` | `contract.pdf` |
+| `import-test.js` | `import-*.xlsx` / `*.csv` |
+| `features-test.js` | `contract.pdf` |
+| `ocr-chain-test.js` | `contract.pdf` |
+| `ui-react-test.js` | `contract.pdf`、`contract-scan.jpg` |
+| `verify-installed.js` | `invoice.pdf`（另需先产出安装包 exe） |
+| `ai-test.js` | `contract.pdf`（另需真实 AI 密钥） |
 
-没素材直接跑，这 4 个会因找不到文件而报错。其余测试（单元、权限、授权、
-多租户、备份还原、迁移等）**不依赖本目录，可以正常跑**。
+另外两个跑不起来，但**与素材无关**，原因是环境不具备：
 
-`run-all.js` 的 OCR 自检环节有 `existsSync` 过滤，会自动跳过缺失的素材。
+- `verify-pro-edition.js` —— 需要真实 PostgreSQL + MinIO 栈
+- `reseed-atomic-test.js` —— 示例数据重播不幂等（实测材料 13 条 ≠ 期望 12 条），
+  这是个**真 bug**，不是缺素材
+
+其余 15 个套件（单元、权限、授权、多租户、备份还原、迁移、凭据脱敏…）
+**不依赖本目录，可以正常跑**。
+
+`run-all.js` 的 OCR 自检环节有 `existsSync` 过滤，会自动跳过缺失的素材；
+一份素材都没有时直接报"跳过"而不是"失败"。
+
+CI 跑的是 `run-all.js --ci`，会主动跳过上面这些套件（清单在 `run-all.js` 的
+`CI_SKIP`，逐条注明了原因）。
 
 ## 给接手的人
 
