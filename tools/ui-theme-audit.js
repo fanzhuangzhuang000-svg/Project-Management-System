@@ -358,7 +358,21 @@ async function loginToken () {
 
   const all = [];
   for (const theme of THEMES) {
-    await ev(`localStorage.setItem('pms.theme', ${JSON.stringify(theme)}); document.documentElement.setAttribute('data-theme', ${JSON.stringify(theme)})`);
+    // 切主题必须让**应用自己**也同意，不能只改 DOM 属性。
+    //
+    // 踩过的坑：原来只 `setAttribute('data-theme', ...)`，而应用内部的主题状态还是
+    // 上一个主题 —— 下一次 React 渲染又把属性改回去，于是"第二个主题的第一页"整页
+    // 按旧主题量，报出一堆假阳性。
+    // 实测：`--themes=dark,light` 连扫时浅色首页报 49 处，单独 `--themes=light` 是 0 处；
+    // 这种误报比漏报更坏 —— 会让人照着不存在的问题改代码。
+    // 所以先写 localStorage，再整页重载（main.tsx 启动时按 localStorage 定主题），
+    // 让 React 状态和 DOM 一致。下面每页仍会再设一次属性，作为兜底。
+    await ev(`localStorage.setItem('pms.theme', ${JSON.stringify(theme)})`);
+    await send('Page.navigate', { url: BASE + '/#/dashboard' });
+    await send('Page.reload');
+    await sleep(900);
+    await wait('!!document.querySelector("main")', 15000);
+    await ev(`document.documentElement.setAttribute('data-theme', ${JSON.stringify(theme)})`);
     console.log(`\n═══ ${theme === 'dark' ? '深色' : '浅色'}主题 ═══`);
     for (const p of PAGES) {
       if (ONLY.length && !ONLY.some(k => p.name.includes(k) || p.hash.includes(k))) continue;

@@ -453,7 +453,7 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
             {/* 正在处理的文件：上传 → 识别 → 判断，三个阶段都让用户看见 */}
             {tasks.map(t => (
               <div key={t.key} className="flex items-center gap-2.5 rounded-card bg-surface px-3.5 py-3 shadow-soft">
-                <span className="flex h-7 w-7 flex-none items-center justify-center rounded-tile bg-slate-100 text-ink-500">
+                <span className="flex h-7 w-7 flex-none items-center justify-center rounded-tile bg-subtle-strong text-ink-500">
                   <Loader2 size={14} className="animate-spin" />
                 </span>
                 <div className="min-w-0 flex-1">
@@ -469,7 +469,7 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
 
             {/* 表格引导 / 认不出：这两种给不了"待确认方案"，但要说清下一步去哪 */}
             {notes.map(n => (
-              <div key={n.key} className="rounded-card border border-slate-200 bg-surface px-4 py-3.5 shadow-soft">
+              <div key={n.key} className="rounded-card border border-track bg-surface px-4 py-3.5 shadow-soft">
                 <div className="flex items-center gap-2">
                   <span className={cn('flex h-6 w-6 flex-none items-center justify-center rounded-full text-white',
                     n.kind === 'import' ? 'bg-brand' : 'bg-slate-400')}>
@@ -483,7 +483,7 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
                 </div>
                 <div className="mt-1.5 whitespace-pre-wrap text-tiny leading-relaxed text-ink-600">{n.body}</div>
                 {n.fields && n.fields.length > 0 && (
-                  <div className="mt-2 space-y-1 rounded-tile bg-slate-50 px-3 py-2">
+                  <div className="mt-2 space-y-1 rounded-tile bg-subtle px-3 py-2">
                     {n.fields.map(([k, v], i) => (
                       <div key={i} className="flex gap-2 text-tiny">
                         <span className="w-[86px] flex-none text-ink-400">{k}</span>
@@ -568,7 +568,7 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
             <div className="flex items-end gap-2">
               {/* 传文件：不需要配大模型也能用（识别 + 按字段填表这条路不花 token） */}
               <button onClick={() => fileRef.current?.click()} title="上传发票 / 合同 / 表格"
-                className="flex h-10 w-10 flex-none items-center justify-center rounded-tile bg-slate-50 text-ink-500 transition-colors duration-200 hover:bg-slate-100 hover:text-brand">
+                className="flex h-10 w-10 flex-none items-center justify-center rounded-tile bg-subtle text-ink-500 transition-colors duration-200 hover:bg-subtle-strong hover:text-brand">
                 <Paperclip size={16} />
               </button>
               <input ref={fileRef} type="file" multiple hidden
@@ -705,7 +705,7 @@ function ProposalCard ({ prop, onDecide }: { prop: AiProposal; onDecide: (ok: bo
                 <span className="w-[84px] flex-none text-tiny text-ink-500">{ed.label || m.label}</span>
                 {kind === 'select' ? (
                   <select value={val} onChange={e => set(e.target.value)}
-                    className="h-8 min-w-0 flex-1 rounded-tile border border-slate-200 bg-surface px-2 text-tiny text-ink-900 outline-none focus:border-brand">
+                    className="h-8 min-w-0 flex-1 rounded-tile border border-track bg-surface px-2 text-tiny text-ink-900 outline-none focus:border-brand">
                     <option value="">请选择…</option>
                     {(ed.options || []).map(o => (
                       <option key={String(o.value)} value={String(o.value)}>{o.label}</option>
@@ -714,7 +714,7 @@ function ProposalCard ({ prop, onDecide }: { prop: AiProposal; onDecide: (ok: bo
                 ) : (
                   <input type={kind === 'number' ? 'number' : 'text'} value={val}
                     onChange={e => set(e.target.value)}
-                    className="h-8 min-w-0 flex-1 rounded-tile border border-slate-200 bg-surface px-2 text-tiny text-ink-900 outline-none focus:border-brand" />
+                    className="h-8 min-w-0 flex-1 rounded-tile border border-track bg-surface px-2 text-tiny text-ink-900 outline-none focus:border-brand" />
                 )}
               </div>
             )
