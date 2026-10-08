@@ -1,7 +1,8 @@
 'use strict';
 /**
  * 数据访问层：建表、通用增删改查、统计聚合、示例数据。
- * 仅使用 Node.js 内置 node:sqlite，无需安装任何第三方依赖。
+ * 单机版走 Node.js 内置 node:sqlite，不需要任何外部服务；连 PostgreSQL 时由
+ * db-driver.js 换成 pg / pglite 适配器（依赖见 package.json），业务代码不用改。
  */
 const path = require('node:path');
 const fs = require('node:fs');
@@ -1320,6 +1321,7 @@ function dashboard () {
     reminders,
     // ---- 首页 2.0（管理系统风格）新增数据块 ----
     week: weekFlows(t),
+    new_contract: contractFlows(t),
     extra: extraStats(t, thisMonth),
     collect_rank: collectRank(),
   };
@@ -1336,6 +1338,32 @@ function weekFlows (t) {
       COALESCE(SUM(CASE WHEN direction='out' THEN amount ELSE 0 END),0) AS out_w
     FROM payments WHERE pay_date >= ?`).get(monISO);
   return { in: round2(r.in_w), out: round2(r.out_w) };
+}
+
+/**
+ * 本月 / 上月 / 本周「新签收入合同额」—— 按签订日期直接查库。
+ * 数据统计卡第一个大数字（新增合同额）用它：以前「本周」没有这个口径，切过去时第一个
+ * 大数字只能临时换成收款（四个数字的含义跟着 tab 漂移），而「本月」又错用了合同总额，
+ * 和右边「总合同额」显示同一个数。现在两个 tab 同一套算法，口径不随 tab 变。
+ * 注：不走快照环比（mom）—— 月初 ensureMonthly 会用当时的实时数补记上月末快照，
+ * 刚装好的机器上它等于当前值，「本月新增」算出来是 0，反而误导。
+ */
+function contractFlows (t) {
+  const sum = (from, to) => round2(db.prepare(`SELECT COALESCE(SUM(amount),0) v FROM contracts
+    WHERE direction='in' AND sign_date >= ? AND sign_date <= ?`).get(from, to).v);
+  const ym = t.slice(0, 7);
+  const [y, m] = ym.split('-').map(Number);
+  const prev = new Date(y, m - 2, 1);
+  const prevYm = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+  const d = new Date(t + 'T00:00:00');
+  const mon = new Date(d.getTime() - ((d.getDay() + 6) % 7) * 86400000);
+  const monISO = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, '0')}-${String(mon.getDate()).padStart(2, '0')}`;
+  // '-31' 只是上界：sign_date 是 YYYY-MM-DD 文本，字典序比较天然覆盖 28/29/30 天的月份
+  return {
+    month: sum(ym + '-01', ym + '-31'),
+    prev_month: sum(prevYm + '-01', prevYm + '-31'),
+    week: sum(monISO, t),
+  };
 }
 
 /** 六个小指标里没有现成值的几个：管理人员 / 本月新增项目 / 待办事项数 */
@@ -1435,6 +1463,7 @@ function dashboardFor (perms) {
   if (!can('projects')) { d.totals.project_count = null; d.totals.project_active = null; d.totals.project_done = null; d.by_status = {}; }
   // ---- 首页 2.0 新数据块：沿用同样的权限口径 ----
   if (!can('payments')) d.week = null;
+  if (!can('contracts')) d.new_contract = null;
   if (!can('projects')) d.collect_rank = [];
   if (!can('payments') || !can('invoices')) d.extra = { ...d.extra, todo_count: null };
   return d;

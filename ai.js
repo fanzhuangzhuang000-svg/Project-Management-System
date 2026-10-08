@@ -126,7 +126,8 @@ const EMPTY = {
   baseUrl: '',
   model: '',
   apiKey: '',
-  temperature: 0.3,
+  // 0.3 出来像念稿（满篇「建议加强管理」这种正确的废话）；0.7 才像人在分析具体项目
+  temperature: 0.7,
   maxTokens: 2000,
   includeContext: true,
   useTools: true,
@@ -217,7 +218,7 @@ function saveConfig (patch, perms) {
 
 /* ==================== 业务上下文组装 ==================== */
 
-const W = (v) => (num(v) / 10000).toFixed(1);        // 元 → 万元
+const W = (v) => (num(v) / 10000).toFixed(2);       // 元 → 万元（2 位小数：1 位时 1000 元会被抹成 0.1 万，模型看不出量级）
 const Y = (v) => Math.round(num(v)).toLocaleString('zh-CN');
 
 /**
@@ -345,8 +346,9 @@ function buildContext (perms, question) {
       out.push(`## 项目明细（共 ${rows.length} 个${rows.length > 60 ? '，下面按合同额列出前 60 个' : ''}）`);
       const enriched = rows.map(r => ({ ...r, ...(stats[r.id] || {}) }));
       enriched.sort((a, b) => num(b.contract_in) - num(a.contract_in));
-      const wantCost = can('expenses') && q.match(/成本|毛利|利润|超支|费用|钱|赚|亏/);
-      const wantCollect = can('payments') && q.match(/回款|收款|应收|欠|账龄|逾期|催/);
+      // 以前这里还按提问关键词（成本|毛利|利润… / 回款|收款…）决定要不要带这两列，
+      // 用户换个说法（「那个项目赚不赚钱」「张经理那个活」）就匹配不上 → 模型手上数据不全、
+      // 回答自然笼统。上下文窗口放得下，只要有权限就一律带上（下面按权限分支里直接 push）。
       for (const p of enriched.slice(0, 60)) {
         // 项目自身的信息：有项目权限就能看
         const bits = [`${p.name}`, `状态${p.status}`, `进度${p.progress}%`, `负责人${p.manager || '未指定'}`];
@@ -357,13 +359,12 @@ function buildContext (perms, question) {
         }
         // 资金口径
         if (can('payments')) {
-          bits.push(`已回款${W(p.paid_in)}`, `应收${W(p.receivable)}`);
-          if (wantCollect) bits.push(`回款率${num(p.collect_rate).toFixed(1)}%`);
+          bits.push(`已回款${W(p.paid_in)}`, `应收${W(p.receivable)}`, `回款率${num(p.collect_rate).toFixed(1)}%`);
         }
         // 成本口径
         if (can('expenses')) {
-          bits.push(`实际成本${W(p.cost)}`, `动态毛利${W(p.actual_profit)}`, `毛利率${num(p.actual_rate).toFixed(1)}%`);
-          if (wantCost) bits.push(`成本执行率${num(p.cost_used_rate).toFixed(1)}%`);
+          bits.push(`实际成本${W(p.cost)}`, `动态毛利${W(p.actual_profit)}`,
+            `毛利率${num(p.actual_rate).toFixed(1)}%`, `成本执行率${num(p.cost_used_rate).toFixed(1)}%`);
         }
         // 发票口径
         if (can('invoices')) bits.push(`已开票${W(p.inv_out)}`);

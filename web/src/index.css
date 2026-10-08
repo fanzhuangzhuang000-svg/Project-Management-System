@@ -322,6 +322,24 @@ html[data-theme='dark'] {
     background: linear-gradient(90deg, rgba(51,65,85,.4) 25%, rgba(71,85,105,.4) 50%, rgba(51,65,85,.4) 75%);
     background-size: 200% 100%;
   }
+
+  /* ---- Select 下拉箭头 ----
+     data URI 里的 SVG 是**独立文档**：页面上的 CSS 变量传不进去，颜色只能写死在 url() 里，
+     所以这里按主题各写一份（等价于 --c-ink-500 的浅色档 #64748B / 深色档 #94A3B8）。
+     ⚠️ 别试图用 style={{ stroke: 'var(--c-ink-400)' }} 改它：select 的 stroke 属性画不到
+        background-image 上（实测 computed stroke 一直是 none，箭头颜色没变过）。
+     实测（4× 截图取像素）：
+       浅色底 #FFFFFF + #94A3B8 → 2.56:1（偏淡，低于 3:1）
+       深色底 #334155 + #94A3B8 → 4.04:1（其实够清楚）
+     所以真正偏淡的是**浅色**那一侧，现在改成 #64748B（4.76:1）；深色保持 #94A3B8。 */
+  .select-caret {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+  }
+  html[data-theme='dark'] .select-caret {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
   html[data-theme='dark'] .tbl tbody tr + tr td { box-shadow: inset 0 1px 0 rgb(var(--c-track) / 0.5); }
 }
 

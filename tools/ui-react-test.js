@@ -167,6 +167,13 @@ const check = (name, ok, extra = '') => {
       hasRank: document.body.innerText.includes('回款率排行'),
       hasNotice: document.body.innerText.includes('通知公告') || document.body.innerText.includes('公司公告'),
       hasTheme: document.documentElement.getAttribute('data-theme') === 'light' || document.documentElement.getAttribute('data-theme') === 'dark',
+      // Banner 副标题行数：曾经 h1 下面渲染了两行（fixed 模式重复同一句、daily 模式语录+旧文案并存）
+      subLines: h1 && h1.parentElement ? [...h1.parentElement.querySelectorAll('p')].map(p => p.innerText.trim()) : [],
+      // 数据统计卡的「更新时间」：曾经写死 08:30，几点打开都是 08:30
+      updated: (document.body.innerText.match(/更新时间[^\\n]*/) || [''])[0].trim(),
+      // 待办环形图标签：done_unpaid 是「竣工未收齐」，曾经错标成「待审合同」
+      donutGongjun: document.body.innerText.includes('竣工未收'),
+      donutDaishen: document.body.innerText.includes('待审合同'),
       pills: document.querySelectorAll('.pill, [class*="rounded-full"]').length,
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       mainScroll: main ? main.scrollHeight - main.clientHeight : 0,
@@ -188,6 +195,18 @@ const check = (name, ok, extra = '') => {
   check('通知公告在', D.hasNotice);
   check('主题已挂到 html[data-theme]', D.hasTheme);
   check('总览无横向溢出', D.overflow <= 2, D.overflow + 'px');
+  // 下面三条是回归钉子：以前 Banner 副标题渲染两行、更新时间写死 08:30、环形图标签错标成「待审合同」
+  check('Banner 副标题只有一行（不再重复渲染）', D.subLines.length === 1, D.subLines.join(' | ') || '(空)');
+  {
+    const m = /更新时间\s*(?:\d{4}-\d{2}-\d{2})?\s*(\d{2}):(\d{2})/.exec(D.updated);
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const shownMin = m ? (+m[1]) * 60 + (+m[2]) : -9999;
+    check('更新时间是当前时刻（不再写死 08:30）', !!m && Math.abs(shownMin - nowMin) <= 5,
+      `${D.updated}（现在 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}）`);
+  }
+  check('环形图标签与数据口径一致（竣工未收，不是待审合同）', D.donutGongjun && !D.donutDaishen,
+    `竣工未收=${D.donutGongjun} 待审合同=${D.donutDaishen}`);
 
   // ---------- 各业务页?----------
   console.log('[5] 业务页面');

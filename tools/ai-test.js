@@ -270,6 +270,21 @@ T.forceAdminPassword();
     check('请求了流式', sent.stream === true);
     console.log(`      上下文长度：${sysText.length} 字`);
 
+    // 中性提问（不含「成本 / 毛利 / 回款」这类关键词）也必须带上回款率与成本执行率。
+    // 以前这两列按提问关键词裁剪，用户换个说法（「那个项目赚不赚钱」「张经理那个活」）
+    // 就匹配不上，模型手上数据不全、回答只能笼统。
+    lastRequest = null;
+    await sseChat(admin, '帮我分析一下');
+    const nsys = ((lastRequest?.body?.messages || []).find(m => m.role === 'system') || {}).content || '';
+    check('中性提问也带上回款率（不再按关键词裁剪）', nsys.includes('回款率'),
+      nsys.includes('回款率') ? '有' : '❌ 被裁掉了');
+    check('中性提问也带上成本执行率（不再按关键词裁剪）', nsys.includes('成本执行率'),
+      nsys.includes('成本执行率') ? '有' : '❌ 被裁掉了');
+    check('金额保留 2 位小数（1 位会抹掉小金额的量级）', /已回款[\d,]+\.\d{2}/.test(nsys),
+      (nsys.match(/已回款[^\n]{0,20}/) || [''])[0].slice(0, 30));
+    check('temperature 用默认 0.7（0.3 出来像念稿）', lastRequest?.body?.temperature === 0.7,
+      'temperature=' + lastRequest?.body?.temperature);
+
     /* ---------- 6. 上下文按权限过滤 ---------- */
     console.log('[6] 权限过滤：看不到的模块不能发给模型');
     const uname = 'aitest_' + Math.random().toString(36).slice(2, 8);

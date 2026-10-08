@@ -100,6 +100,14 @@ const TPASS = 'view1234';
   const logs = await req('GET', '/api/logs?action=login', { cookie: adminCookie });
   check('记录了登录动作', logs.data.rows.some(l => l.action === 'login'), logs.data.rows.length + ' 条登录日志');
 
+  // 首页右侧「系统通知」取的就是这类登录/备份日志。
+  // server.js 里那个过滤条件曾经写反（.some(...) === false），把这些全排除了，面板永远是空的。
+  const notices = await req('GET', '/api/notices', { cookie: adminCookie });
+  const sysNotices = (notices.data && notices.data.system) || [];
+  check('系统通知能取到登录日志（过滤条件没写反）',
+    sysNotices.length >= 1 && sysNotices.every(n => /登录|备份|升级/.test(n.title || '')),
+    sysNotices.length ? sysNotices.map(n => n.title).slice(0, 2).join(' / ') : '空');
+
   // ================= 6. 修改密码 =================
   console.log('\n[6] 修改密码');
   const wrongOld = await req('POST', '/api/me/password', { cookie: vCookie, body: { old: 'nope', new: 'newpass123' } });

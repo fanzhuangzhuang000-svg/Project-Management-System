@@ -293,6 +293,8 @@ export interface Dashboard {
   mom: null | { base_ym: string; contract_in: number | null; cost: number | null; paid_in: number | null; receivable: number | null; actual_profit: number | null }
   /** 本周收付款（周一到现在）—— 数据统计卡「本周」tab */
   week?: { in: number; out: number } | null
+  /** 新签收入合同额（按签订日期）：本月 / 上月 / 本周 —— 数据统计卡第一个大数字 */
+  new_contract?: { month: number; prev_month: number; week: number } | null
   /** 首页 2.0 六个小指标里缺的几个 */
   extra?: { staff?: number; new_projects?: number; todo_count?: number | null } | null
   /** 项目回款率排行 Top5 */

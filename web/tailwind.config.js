@@ -89,6 +89,14 @@ export default {
           50: 'rgb(var(--c-surface-2) / <alpha-value>)',
           100: 'rgb(var(--c-surface-3) / <alpha-value>)',
           200: 'rgb(var(--c-track) / <alpha-value>)',
+          // 300 常被当底色用（bg-slate-300）：深色下必须跟着压暗，否则整块发亮
+          300: 'rgb(var(--c-track) / <alpha-value>)',
+          // 400 浅色下是「辅助小字 / 中性圆点」。别接到 --c-ink-400：那一档深色下是
+          // 100 116 139，压在深色卡片上只有 3:1，12px 小字会看不清。
+          // --c-line 深浅两套都是 148 163 184，观感零变化，但从此可统一调整。
+          400: 'rgb(var(--c-line) / <alpha-value>)',
+          // 500 正好等于浅色的 --c-ink-500；深色下自动变亮成 148 163 184，文字才看得清
+          500: 'rgb(var(--c-ink-500) / <alpha-value>)',
         },
       },
       borderRadius: {

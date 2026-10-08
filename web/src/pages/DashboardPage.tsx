@@ -22,11 +22,8 @@ import { cn, fmtWan, n0, delta as calcDelta, renderWelcome, pickWelcomeSlot, res
 export default function DashboardPage() {
   const { user, dash, loading, refreshDash, settings } = useApp()
   const [range, setRange] = useState<'week' | 'month'>('month')
-  const [briefing, setBriefing] = useState(false)
 
   useEffect(() => { void refreshDash() }, [refreshDash])
-  // 简报卡只在配置了 AI 时出现；先探测一次（BriefingCard 自己内部也有兜底）
-  useEffect(() => { setBriefing(true) }, [])
 
   const d = dash
   const t = (d?.totals || {}) as Record<string, number>
@@ -37,6 +34,10 @@ export default function DashboardPage() {
   const welcomeText = renderWelcome(String(S[pickWelcomeSlot()] ?? ''), S.company_name)
   // 副标题：fixed=固定文案，daily=每日随机打工人语录（仅替换文本，排版样式不变）
   const subtitleText = resolveSubtitle((S as any).subtitle_mode, S.welcome_subtitle)
+
+  // 数据统计卡的「更新时间」= 当前时刻（HH:MM）。以前这里写死 08:30，几点打开都显示 08:30。
+  const now = new Date()
+  const updatedAt = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
 
   /* ---------- 四张渐变入口卡 ---------- */
   const activeCount = n0(t.project_active)
@@ -64,21 +65,27 @@ export default function DashboardPage() {
   ]
 
   /* ---------- 数据统计：本周/本月切换 ---------- */
+  // 四个大数字在两个 tab 下含义一致（新增合同额 / 总合同额 / 新增回款 / 总回款），只是周期不同。
+  // 以前「本周」把第一、三张卡临时换成了收款/付款 —— 一点 tab 就发现「新增合同额」没了；
+  // 而「本月」的第一张卡又错用了合同总额，和右边「总合同额」是同一个数（看着像重复）。
   const isWeek = range === 'week'
-  const newContractAmt = isWeek
-    ? null // 本周新增合同没有单独口径，用月环比替代展示
-    : n0(t.contract_in)
+  const nc = d?.new_contract
+  const newContract = isWeek ? nc?.week : nc?.month
+  const prevNewContract = nc?.prev_month
   const fmtDelta = (v: number | null | undefined) => {
     if (v == null || !Number.isFinite(v) || v === 0) return null
     return v > 0 ? { up: true, text: `▲${Math.abs(Math.round(v))}%` } : { up: false, text: `▼${Math.abs(Math.round(v))}%` }
   }
+  // 新增合同额的环比：本月 vs 上月，两边都是「新签收入合同额」（后端按签订日期算）
+  const newContractMom = Number(prevNewContract) > 0
+    ? ((n0(newContract) - n0(prevNewContract)) / Number(prevNewContract)) * 100
+    : null
   const bigStats = [
-    { label: isWeek ? '本周收款' : '新增合同额', value: isWeek ? fmtWan(d?.week?.in) : fmtWan(newContractAmt), unit: '万',
-      delta: isWeek ? null : fmtDelta(pct(mom?.contract_in, t.contract_in)),
-      tone: 'blue' },
+    { label: isWeek ? '本周新增合同' : '本月新增合同', value: fmtWan(newContract), unit: '万',
+      delta: isWeek ? null : fmtDelta(newContractMom), tone: 'blue' },
     { label: '总合同额', value: fmtWan(t.contract_in), unit: '万',
       delta: null, tone: 'blue' },
-    { label: isWeek ? '本周付款' : '新增回款', value: isWeek ? fmtWan(d?.week?.out) : fmtWan(d?.month_in), unit: '万',
+    { label: isWeek ? '本周回款' : '本月回款', value: isWeek ? fmtWan(d?.week?.in) : fmtWan(d?.month_in), unit: '万',
       delta: null, tone: 'green' },
     { label: '总回款', value: fmtWan(t.paid_in), unit: '万',
       delta: fmtDelta(pct(mom?.paid_in, t.paid_in)), tone: 'green' },
@@ -92,7 +99,7 @@ export default function DashboardPage() {
     { label: '待办事项', value: d?.extra?.todo_count != null ? `${n0(d.extra.todo_count)}项` : '—' },
   ]
 
-  /* ---------- 待办总览（环形图四段：逾期未收/7天内到期/待审合同/售后待处理） ---------- */
+  /* ---------- 待办总览（环形图四段：逾期未收/7天内到期/竣工未收/售后待处理） ---------- */
   const schedTotals = d?.schedules?.totals || {}
   const todoSlices = useMemo(() => {
     const byKind: Record<string, number> = {}
@@ -103,11 +110,13 @@ export default function DashboardPage() {
     const due7 = n0((d?.reminders || []).find(r => r.kind === 'due_7')?.count)
     const maint = n0((d?.reminders || []).find(r => r.kind === 'maint')?.count)
     const doneUnpaid = n0((d?.reminders || []).find(r => r.kind === 'done_unpaid')?.count)
+    // done_unpaid 在 db.js 里是「已过竣工日期、款还没收齐的项目数」，
+    // 既不是「待审合同」也不是「已收未开票」—— 标签必须跟数据口径一致（这里以前写错了）。
     return [
-      { label: '逾期未收', value: overdueIn, color: '#EF4444' },
-      { label: '7天内到期', value: due7, color: '#F59E0B' },
-      { label: '待审合同', value: doneUnpaid, color: '#3B82F6' },
-      { label: '售后待处理', value: maint, color: '#8B5CF6' },
+      { label: '逾期未收', value: overdueIn, color: '#EF4444', unit: '笔' },
+      { label: '7天内到期', value: due7, color: '#F59E0B', unit: '笔' },
+      { label: '竣工未收', value: doneUnpaid, color: '#3B82F6', unit: '个' },
+      { label: '售后待处理', value: maint, color: '#8B5CF6', unit: '单' },
     ].filter(s => s.value > 0)
   }, [d])
   const todoTotal = todoSlices.reduce((s, x) => s + x.value, 0)
@@ -153,10 +162,10 @@ export default function DashboardPage() {
             <h1 className="text-[28px] font-bold leading-tight" style={{ color: 'var(--banner-title)' }}>
               {welcomeText}
             </h1>
+            {/* 副标题只渲染这一行：fixed 模式是 welcome_subtitle，daily 模式是每日语录。
+                以前下面又原样输出了一遍 S.welcome_subtitle，于是 fixed 模式标题下出现两行一样的字、
+                daily 模式语录和旧文案同时出现。welcome_subtitle 由 db.js 的默认值兜底，不会为空。 */}
             <p className="mt-2 text-[16px] font-semibold" style={{ color: 'rgb(var(--c-ink-900))' }}>{subtitleText}</p>
-            <p className="mt-1 text-[13px]" style={{ color: 'rgb(var(--c-ink-500))' }}>
-              {String(S.welcome_subtitle || '平台布局更清晰，数据管理更便捷，组件样式更美观，给您带来全新产品体验')}
-            </p>
           </div>
           {/* 3D 风格弱电插画：蓝图卷轴 + 安全帽 + 线缆 */}
           <DecorElv />
@@ -194,7 +203,7 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-baseline gap-3">
             <span className="text-[15px] font-bold text-ink-900">数据统计</span>
-            <span className="text-[12px] text-ink-400">更新时间 {String(d?.today || '').slice(0, 10)} 08:30</span>
+            <span className="text-[12px] text-ink-400">更新时间 {String(d?.today || '').slice(0, 10)} {updatedAt}</span>
           </div>
           <div className="flex items-center gap-1 rounded-full p-1" style={{ background: 'var(--tile-bg)' }}>
             {(['week', 'month'] as const).map(v => (
@@ -261,7 +270,7 @@ export default function DashboardPage() {
                     className="flex items-center gap-2.5 rounded-tile px-2 py-1.5 transition-colors duration-200 hover:bg-slate-50">
                     <span className="h-2.5 w-2.5 flex-none rounded-full" style={{ background: s.color }} />
                     <span className="min-w-0 flex-1 truncate text-body text-ink-700">{s.label}</span>
-                    <span className="tnum text-body font-bold text-ink-900">{s.value}{s.label === '售后待处理' ? '单' : '笔'}</span>
+                    <span className="tnum text-body font-bold text-ink-900">{s.value}{s.unit}</span>
                   </Link>
                 ))}
               </div>

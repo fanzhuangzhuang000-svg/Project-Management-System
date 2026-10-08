@@ -9,7 +9,8 @@
 - **收付款计划与逾期预警** —— 按合同付款条款自动拆成收款节点，实时算出每个节点的冲抵进度，谁欠钱、欠多久一目了然
 - **Excel 批量导入** —— 现成的历史台账直接导进来，不用一条条敲
 
-技术上是**零第三方 npm 依赖**：只要有 Node.js 18+ 就能跑，识别用系统自带引擎
+技术上是**单机版内置 SQLite、零外部服务**：只要有 Node.js 18+ 就能跑；专业版可选配
+PostgreSQL / MinIO（依赖见 `package.json`）。识别用系统自带引擎
 （Windows 用内置中文 OCR，Linux 用 Tesseract），不联网、不上云。
 Linux 上另需系统包：`apt install tesseract-ocr tesseract-ocr-chi-sim poppler-utils`。
 
@@ -772,7 +773,7 @@ netsh advfirewall firewall add rule name="弱电项目管理系统" dir=in actio
 
 ### 7. 大屏图形增强
 
-用**纯 SVG 手绘**，没有引入任何第三方图表库（保住零依赖、断网也能用、配色风格统一）：
+用**纯 SVG 手绘**，没有引入任何第三方图表库（不用图表依赖、断网也能用、配色风格统一）：
 环形仪表（按比例填充 + 发光）、趋势折线（渐变面积 + 数据点 + 悬停提示）。
 
 ### 8. 手机端适配
@@ -1033,8 +1034,10 @@ elv-pms\
 
 ## 十七、技术说明（给接手维护的人）
 
-- 运行时：Node.js 18+（实测 22.23.2），后端使用内置 `node:sqlite`，**后端依旧零 npm 依赖**
-- 后端：`node:http` 手写路由（含零依赖的 `multipart/form-data` 解析器），REST 接口见 `server.js`
+- 运行时：Node.js 18+（实测 22.23.2），后端**单机版**使用内置 `node:sqlite`，零外部服务；
+  Docker / Linux 专业版走 PostgreSQL（`pg`），附件可选 MinIO（`minio`），可选能力还用到
+  `@electric-sql/pglite` 与 `js-yaml` —— 依赖都在 `package.json` 里，`npm install` 一次装齐
+- 后端：`node:http` 手写路由（含自己实现的 `multipart/form-data` 解析器，不依赖第三方 body 解析库），REST 接口见 `server.js`
 - 前端：**React 18 + TypeScript + Vite + Tailwind CSS**，图表用 Recharts，图标用 Lucide React
   （组件风格对齐 shadcn/ui，但没有用它的 CLI，组件都手写在 `web/src/components/ui/`）
 - 前端源码在 `web/`，构建产物输出到 `public/`，后端原样托管 `public/` —— **后端一个字都没改**

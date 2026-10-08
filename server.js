@@ -1,7 +1,8 @@
 'use strict';
 /**
  * 弱电智能化工程项目管理系统 —— 后端服务
- * 零第三方依赖：node:http + node:sqlite
+ * 单机版零外部服务：node:http 手写路由 + 内置 node:sqlite，装上就能跑；
+ * 专业版可选配 PostgreSQL / MinIO（第三方依赖见 package.json）
  * 启动： node server.js [--port 8787]
  */
 const http = require('node:http');
@@ -752,9 +753,15 @@ async function handleApi (req, res, url) {
   // 公司公告 / 放假通知目前没有独立模块，先空着（前端会显示「暂无」），
   // 结构留好 —— 以后加公告表时直接往两个数组里塞就行。
   if (head === 'notices') {
+    // ⚠️ 这里原来写的是 .some(...) === false —— 条件反了，把「登录 / 备份」这些系统动作
+    //    全排除在外，首页右侧「系统通知」因此永远是空的。改成按 action 精确取（等价于原来的
+    //    === true，但不依赖 summary 文案，改文案也不会失配）。
+    //    另：原来只取 12 条再过滤，最近 12 条若都是业务操作，系统通知会被挤掉，所以窗口放大到 100 条。
+    //    注：目前没有 action='upgrade' 的写入点，「升级」是先留着的口径（见 logs.js 的 ACTION_LABEL）。
+    const SYS_ACTIONS = new Set(['login', 'backup', 'upgrade']);
     const sysRows = (() => {
-      try { return logmod.list({ limit: 12 }).rows || []; } catch { return []; }
-    })().filter(l => ['登录', '备份', '升级'].some(k => String(l.summary || '').includes(k)) === false)
+      try { return logmod.list({ limit: 100 }).rows || []; } catch { return []; }
+    })().filter(l => SYS_ACTIONS.has(String(l.action || '')))
       .slice(0, 5)
       .map(l => ({
         title: l.summary || l.action,
@@ -946,7 +953,7 @@ async function handleApi (req, res, url) {
         });
         push({ type: 'done', usage: out.usage || null, tools: out.usedTools || 0 });
         const tk = out.usage && (out.usage.total_tokens || out.usage.output_tokens);
-        writeLog(req, 'ai', null, null, String(body.question || '').slice(0, 40),
+        writeLog(req, 'ai', null, null, '用户向AI提问',
           `${out.text.length} 字回复${tk ? `，${tk} tokens` : ''}${out.usedTools ? `，查了 ${out.usedTools} 次明细` : ''}`);
       } catch (e) {
         push({ type: 'error', error: e.message });
