@@ -64,7 +64,7 @@ export function LicenseCard () {
         <Pill tone={TONE[st] || 'gray'} dot={st === 'ok'}>{LABEL[st] || st}</Pill>
       </div>
 
-      <div className="space-y-3 px-5 pb-5">
+      <div className="space-y-3.5 px-5 pb-5">
         {st !== 'none' && (
           <div className="space-y-1 rounded-tile bg-slate-50 px-3.5 py-3">
             {info?.company && (

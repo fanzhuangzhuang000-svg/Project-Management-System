@@ -40,7 +40,7 @@ export default function SettingsPage() {
         <Button variant="soft" className="ml-auto" onClick={load}><RefreshCw size={15} /> 刷新</Button>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+      <div className="grid grid-cols-1 gap-y-4 gap-x-5 xl:grid-cols-12">
         {/* 界面自定义（公司名 / 系统名 / 欢迎语）—— 放最前，换品牌第一眼就看到 */}
         <AppearanceSettingsCard />
 

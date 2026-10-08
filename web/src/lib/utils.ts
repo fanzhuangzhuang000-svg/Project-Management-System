@@ -135,3 +135,38 @@ export function pickWelcomeSlot (
   if (h >= 12 && h < 18) return 'welcome_afternoon'
   return 'welcome_evening'
 }
+
+/* ============ 首页副标题：固定文案 / 每日随机打工人语录 ============ */
+
+/** 内置弱电工程行业语录库 */
+export const WORKER_QUOTES: string[] = [
+  '今日搬砖，项目稳步推进',
+  '工程无小事，细节定成败',
+  '认真管好每一份合同，盯紧每一笔回款',
+  '开工顺顺利利，回款稳稳当当',
+  '今日努力，只为项目按时交付',
+  '弱电工程人，脚踏实地，不负所托',
+  '把控项目风险，做好项目管理',
+  '忙而不乱，稳步推进所有项目',
+]
+
+/**
+ * 按日期从语录库稳定挑一条：同一天内结果固定不刷新，换日期自动更换。
+ * 用「年内的第几天」做种子，纯前端计算，不依赖后端与缓存。
+ */
+export function pickDailyQuote (d: Date = new Date()): string {
+  const start = new Date(d.getFullYear(), 0, 0)
+  const dayOfYear = Math.floor((d.getTime() - start.getTime()) / 86400000)
+  return WORKER_QUOTES[dayOfYear % WORKER_QUOTES.length]
+}
+
+/** 副标题模式：fixed=固定副标题（沿用 welcome_subtitle），daily=每日随机语录 */
+export type SubtitleMode = 'fixed' | 'daily'
+
+/**
+ * 解析当前该显示的副标题文本。
+ * 仅替换文本，文字位置与排版由调用处保持不变。
+ */
+export function resolveSubtitle (mode: string | undefined, fixed: string, d: Date = new Date()): string {
+  return mode === 'daily' ? pickDailyQuote(d) : String(fixed || '')
+}

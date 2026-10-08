@@ -117,6 +117,8 @@ const DEFAULT_SETTINGS = {
   welcome_afternoon: '下午好，{公司名} ☕',
   welcome_evening: '晚上好，{公司名} 🌙',
   welcome_subtitle: '以下是您团队今日的工作概览',
+  // 副标题模式：fixed=固定副标题（沿用 welcome_subtitle），daily=每日随机打工人语录
+  subtitle_mode: 'fixed',
   // 授权码：由 tools/gen-license.js 生成。空 = 未授权（功能不限，只提示）
   license_key: '',
   // 操作日志保留天数。0 = 永久保留；超期在启动时和每天自动清理

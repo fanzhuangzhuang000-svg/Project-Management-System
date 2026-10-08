@@ -4,7 +4,7 @@ import { Button, Card, IconTile, Input, Pill, Skeleton } from '@/components/ui/p
 import { useToast } from '@/components/ui/overlay'
 import { useApp, DEFAULT_SETTINGS } from '@/app-context'
 import { http, type AppSettings } from '@/lib/api'
-import { cn, pickWelcomeSlot, renderWelcome } from '@/lib/utils'
+import { cn, pickWelcomeSlot, renderWelcome, resolveSubtitle, pickDailyQuote } from '@/lib/utils'
 
 const SLOTS: { key: keyof AppSettings; label: string; hint: string }[] = [
   { key: 'welcome_morning', label: '上午 05:00 - 12:00', hint: '上午好，{公司名} 👋' },
@@ -45,6 +45,9 @@ export function AppearanceSettingsCard () {
 
   const activeKey = pickWelcomeSlot()
   const preview = renderWelcome(form[activeKey] as string, form.company_name)
+  const isDaily = String((form as any).subtitle_mode ?? 'fixed') === 'daily'
+  // 实时预览里的副标题：跟随当前模式，daily 时显示今天会抽中的那条
+  const subtitlePreview = isDaily ? pickDailyQuote() : String(form.welcome_subtitle || '')
   const dirty = settings
     ? Object.keys(DEFAULT_SETTINGS).some(k => (form as any)[k] !== (settings as any)[k])
     : false
@@ -75,7 +78,7 @@ export function AppearanceSettingsCard () {
         {dirty && <Pill tone="orange">有未保存的改动</Pill>}
       </div>
 
-      <div className="space-y-4 px-5 pb-5">
+      <div className="space-y-3.5 px-5 pb-5">
         {/* 公司名 + 系统名 */}
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
@@ -113,11 +116,37 @@ export function AppearanceSettingsCard () {
                   placeholder={s.hint} className="!h-9 min-w-[200px] flex-1 text-tiny" />
               </label>
             ))}
-            <label className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="w-[132px] flex-none text-tiny text-ink-500">副标题</span>
-              <Input value={form.welcome_subtitle} onChange={e => set('welcome_subtitle', e.target.value)}
-                placeholder="以下是您团队今日的工作概览" className="!h-9 min-w-[200px] flex-1 text-tiny" />
-            </label>
+              <div className="flex min-w-[200px] flex-1 flex-wrap items-center gap-3">
+                {/* 模式单选：固定副标题 / 每日随机打工人语录 */}
+                <label className="flex cursor-pointer items-center gap-1.5 text-tiny text-ink-600">
+                  <input type="radio" name="subtitle_mode" className="h-3.5 w-3.5 accent-[#3B82F6]"
+                    checked={!isDaily} onChange={() => set('subtitle_mode' as any, 'fixed')} />
+                  固定副标题
+                </label>
+                <label className="flex cursor-pointer items-center gap-1.5 text-tiny text-ink-600">
+                  <input type="radio" name="subtitle_mode" className="h-3.5 w-3.5 accent-[#3B82F6]"
+                    checked={isDaily} onChange={() => set('subtitle_mode' as any, 'daily')} />
+                  每日随机打工人语录
+                </label>
+              </div>
+            </div>
+            {!isDaily && (
+              <label className="flex flex-wrap items-center gap-2">
+                <span className="w-[132px] flex-none text-tiny text-transparent">副标题</span>
+                <Input value={form.welcome_subtitle} onChange={e => set('welcome_subtitle', e.target.value)}
+                  placeholder="以下是您团队今日的工作概览" className="!h-9 min-w-[200px] flex-1 text-tiny" />
+              </label>
+            )}
+            {isDaily && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-[132px] flex-none text-tiny text-transparent">副标题</span>
+                <span className="text-tiny text-ink-400">
+                  每天自动从内置语录库随机展示一条，同一天内固定不变，换日期自动更换
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -127,7 +156,10 @@ export function AppearanceSettingsCard () {
             <Eye size={12} /> 实时预览（现在这个点首页会显示）
           </div>
           <div className="text-body font-bold">{preview}</div>
-          <div className="mt-0.5 text-tiny text-white/80">{form.welcome_subtitle}</div>
+          <div className="mt-0.5 text-tiny text-white/80">
+            {subtitlePreview}
+            {isDaily && <span className="ml-1.5 text-white/60">（每日随机）</span>}
+          </div>
         </div>
 {/* 备份异地存放 */} <div className="rounded-tile bg-slate-50 px-3.5 py-3">   <div className="mb-2 text-tiny font-medium text-ink-600">备份异地存放</div>   <div className="space-y-2.5">     <label className="flex flex-wrap items-center gap-2">       <span className="w-[92px] flex-none text-tiny text-ink-500">方式</span>       <select         value={String((form as any).backup_remote ?? 'off')}         onChange={e => set('backup_remote' as any, e.target.value)}         className="h-9 min-w-[180px] flex-1 rounded-tile bg-white px-3 text-tiny text-ink-800 outline-none"       >         <option value="off">只留本地（默认）</option>         <option value="share">复制到局域网共享目录</option>         <option value="minio">上传到 MinIO（网络版）</option>       </select>     </label>     {String((form as any).backup_remote) === 'share' && (       <label className="flex flex-wrap items-center gap-2">         <span className="w-[92px] flex-none text-tiny text-ink-500">共享目录</span>         <Input           value={String((form as any).backup_share ?? '')}           onChange={e => set('backup_share' as any, e.target.value)}           placeholder="\\\\NAS\\backup\\elv-pms  或  Z:\\备份"           className="!h-9 min-w-[200px] flex-1 text-tiny"         />       </label>     )}     <span className="block text-tiny leading-relaxed text-ink-400">       本地备份只防手滑删库，防不了这台电脑坏掉。异地失败不会影响本地备份。     </span>   </div> </div> 
 

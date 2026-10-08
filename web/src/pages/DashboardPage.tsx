@@ -9,7 +9,7 @@ import { MetricCard } from '@/components/dashboard/MetricCard'
 import { BriefingCard } from '@/components/dashboard/BriefingCard'
 import { useApp, DEFAULT_SETTINGS } from '@/app-context'
 import { http, type Dashboard as Dash } from '@/lib/api'
-import { cn, fmtWan, n0, delta as calcDelta, renderWelcome, pickWelcomeSlot } from '@/lib/utils'
+import { cn, fmtWan, n0, delta as calcDelta, renderWelcome, pickWelcomeSlot, resolveSubtitle } from '@/lib/utils'
 
 /**
  * 工作台首页 · 管理系统 2.0 风格
@@ -35,6 +35,8 @@ export default function DashboardPage() {
   /* ---------- Banner 欢迎语（沿用系统设置模板） ---------- */
   const S = settings || DEFAULT_SETTINGS
   const welcomeText = renderWelcome(String(S[pickWelcomeSlot()] ?? ''), S.company_name)
+  // 副标题：fixed=固定文案，daily=每日随机打工人语录（仅替换文本，排版样式不变）
+  const subtitleText = resolveSubtitle((S as any).subtitle_mode, S.welcome_subtitle)
 
   /* ---------- 四张渐变入口卡 ---------- */
   const activeCount = n0(t.project_active)
@@ -151,7 +153,7 @@ export default function DashboardPage() {
             <h1 className="text-[28px] font-bold leading-tight" style={{ color: 'var(--banner-title)' }}>
               {welcomeText}
             </h1>
-            <p className="mt-2 text-[16px] font-semibold" style={{ color: 'var(--ink-900)' }}>界面框架全面升级</p>
+            <p className="mt-2 text-[16px] font-semibold" style={{ color: 'var(--ink-900)' }}>{subtitleText}</p>
             <p className="mt-1 text-[13px]" style={{ color: 'var(--ink-500)' }}>
               {String(S.welcome_subtitle || '平台布局更清晰，数据管理更便捷，组件样式更美观，给您带来全新产品体验')}
             </p>

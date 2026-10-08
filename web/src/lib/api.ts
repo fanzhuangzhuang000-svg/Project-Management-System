@@ -138,6 +138,8 @@ export interface AppSettings {
   welcome_afternoon: string
   welcome_evening: string
   welcome_subtitle: string
+  /** 副标题模式：fixed=固定副标题，daily=每日随机打工人语录 */
+  subtitle_mode: string
   license_key: string
 }
 export interface User {

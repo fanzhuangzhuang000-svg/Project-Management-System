@@ -32,6 +32,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   welcome_afternoon: '下午好，{公司名} ☕',
   welcome_evening: '晚上好，{公司名} 🌙',
   welcome_subtitle: '以下是您团队今日的工作概览',
+  subtitle_mode: 'fixed',
   license_key: '',
 }
 

@@ -236,6 +236,20 @@ const SYS_LABEL: Record<string, string> = {
   import: '数据导入', backup: '数据备份', settings: '系统设置',
 }
 
+/** 模块权限列表：英文 key → 中文名（只影响显示，勾选逻辑仍用英文 key） */
+const MODULE_LABEL: Record<string, string> = {
+  projects: '项目管理',
+  contracts: '合同管理',
+  contract_changes: '合同变更',
+  schedules: '收付款计划',
+  payments: '收付款',
+  invoices: '发票管理',
+  expenses: '项目费用',
+  materials: '材料设备',
+  partners: '往来单位',
+  maintenance: '售后维修',
+}
+
 function UserForm({
   user, tables, sysKeys, onClose, onSaved,
 }: { user: any | null; tables: string[]; sysKeys?: string[]; onClose: () => void; onSaved: () => void }) {
@@ -323,7 +337,7 @@ function UserForm({
                 <tbody>
                   {tables.map(t => (
                     <tr key={t} className="bg-white/60">
-                      <td className="px-4 py-1.5 text-ink-700">{t}</td>
+                      <td className="px-4 py-1.5 text-ink-700">{MODULE_LABEL[t] || t}</td>
                       <td className="py-1.5 text-center">
                         <input type="checkbox" className="h-4 w-4 cursor-pointer accent-blue-500"
                           checked={read.includes(t)} onChange={() => toggle(read, setRead, t)} />
