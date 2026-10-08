@@ -97,7 +97,7 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   }
 
   // ---------- 3. 主程序测试套件 ----------
-  head('3/6  主程序测试（26 套件）');
+  head('3/6  主程序测试（27 套件）');
   const SUITES = [    ['登录与权限', 'auth-test.js'], ['表级越权', 'perm-test.js'],
     ['八项优化', 'upgrade-test.js'], ['性能回归', 'perf-test.js'],
     ['子系统多选', 'multi-test.js'], ['付款条款解析', 'plan-test.js'],
@@ -121,6 +121,9 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     ['发布工作流', 'check-workflows.js'],
     // 版本号一致性：server.js 曾写死 '1.0.0'，1.0.1/1.0.2 的包对外谎报 v1.0.0。
     ['版本号一致性', 'version-consistency-test.js'],
+    // 发票抬头是左右两栏并排，归一化删掉汉字间空格后购买方会吞掉销售方
+    // （线上真实票据：「上海A公司销名称:上海B公司」当成了一个公司名）。
+    ['发票购销双方', 'invoice-party-test.js'],
   ];
   let suitePass = 0, suiteTotal = 0, skipped = 0;
   for (const [name, file] of SUITES) {

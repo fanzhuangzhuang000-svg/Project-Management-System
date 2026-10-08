@@ -350,13 +350,45 @@ function extractInvoice (compact, normalized) {
   // 购销双方。
   // OCR 常把「购买方名称」截成「购名称」、「销售方名称」截成「销名称」，
   // 只认完整标签会一个都抽不到，所以补齐缺字形式。
-  const grab = (re) => { const mm = compact.match(re); return mm ? mm[1].replace(/[（(].*$/, '').trim() : null; };
-  const buyer = grab(/购买方[^名]{0,4}名称[:：]?([^\n]{2,40})/)
-    || grab(/(?:购买方|购)\s*名\s*称[:：]?([^\n]{2,40})/)
-    || grab(/购\s*买\s*方[:：]?([^\n]{2,40})/);
-  const seller = grab(/销售方[^名]{0,4}名称[:：]?([^\n]{2,40})/)
-    || grab(/(?:销售方|销)\s*名\s*称[:：]?([^\n]{2,40})/)
-    || grab(/销\s*售\s*方[:：]?([^\n]{2,40})/);
+  //
+  // 还有个更隐蔽的坑（线上真实票据复现）：发票抬头是**左右两栏并排**的，
+  // PDF 文字层和 OCR 都会把同一行的两栏拼成一条：
+  //   购 名称：上海索杰电子信息系统有限公司 销 名称：上海颤维电子科技有限公司
+  // 而归一化会删掉汉字之间的空格（那是为了修「发 票 号 码」的噪声），
+  // 两栏就彻底连成一片。于是「购买方名称」把销售方的标签和名字整段吞进来，
+  // 得到一个 31 字的假公司名 —— 靠长度截断救不了，必须在**下一个字段标签**处截断。
+  //
+  // 分强弱两档：强档不可能是公司名的一部分，直接截；弱档（地址/电话/开户行…）
+  // 可能真的出现在公司名里（「上海电话设备厂」），只有后面跟着冒号才算标签。
+  const NAME_STOP_STRONG = /(?:购|销)(?:买|售)?\s*方?\s*名\s*称|统\s*一\s*社\s*会|纳\s*税\s*人\s*识\s*别\s*号|(?:购|销)(?:买|售)\s*方\s*信\s*息|价\s*税\s*合\s*计|开\s*票\s*人/;
+  const NAME_STOP_WEAK = /(?:地\s*址|电\s*话|开\s*户\s*行|银\s*行\s*账\s*号|账\s*号|项\s*目\s*名\s*称|货\s*物\s*或\s*应\s*税|规\s*格\s*型\s*号|备\s*注)[:：]/;
+  const cutName = (raw) => {
+    let s = String(raw);
+    let cut = s.length;
+    for (const re of [/[（(]/, NAME_STOP_STRONG, NAME_STOP_WEAK]) {
+      const mm = s.match(re);
+      if (mm && mm.index < cut) cut = mm.index;
+    }
+    return s.slice(0, cut).replace(/[\s:：,，、;；-]+$/, '').trim();
+  };
+  const grab = (...res) => {
+    for (const re of res) {
+      const mm = compact.match(re);
+      if (!mm) continue;
+      // 标签找到了就认这个标签，值被截空也**只**返回空 ——
+      // 不能退到更松的规则去再抓一次：那会从「购买方名称：销名称：上海B公司」
+      // 里抓出「名称」这种垃圾当公司名。宁可空手让用户自己填。
+      const s = cutName(mm[1]);
+      return s.length >= 2 ? s : null;
+    }
+    return null;
+  };
+  const buyer = grab(/购买方[^名]{0,4}名称[:：]?([^\n]{2,40})/,
+    /(?:购买方|购)\s*名\s*称[:：]?([^\n]{2,40})/,
+    /购\s*买\s*方[:：]?([^\n]{2,40})/);
+  const seller = grab(/销售方[^名]{0,4}名称[:：]?([^\n]{2,40})/,
+    /(?:销售方|销)\s*名\s*称[:：]?([^\n]{2,40})/,
+    /销\s*售\s*方[:：]?([^\n]{2,40})/);
   if (buyer) parties.push({ role: 'buyer', label: '购买方', name: buyer });
   if (seller) parties.push({ role: 'seller', label: '销售方', name: seller });
 
