@@ -1,6 +1,6 @@
 {
   "name": "elv-pms",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "弱电智能化工程项目管理系统",
   "scripts": {

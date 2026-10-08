@@ -26,7 +26,36 @@ const { TABLES, TABLE_ORDER } = require('./schema.js');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const APP_NAME = '弱电智能化工程项目管理系统';
-const VERSION = '1.0.0';
+
+/**
+ * 版本号。
+ *
+ * 踩过的坑：这里原来写死 '1.0.0'，于是 1.0.1 / 1.0.2 的安装包启动横幅、
+ * /api/health、/api/meta 全都报 v1.0.0 —— 客户报障时问「你装的哪一版」，
+ * 两边看到的版本号对不上，只能靠翻文件时间猜。
+ *
+ * 所以改成运行时读随包的 package.json（Linux 包和 Docker 包都会带上它）。
+ * Windows 单机版是按 require 依赖图打包的，package.json 不一定在包里，
+ * 读不到就走下面的兜底常量。
+ *
+ * ⚠️ 兜底常量必须和 package.json 的 version 一致 —— 由
+ *    tools/version-consistency-test.js 断言，对不上 CI 直接红。
+ */
+const VERSION_FALLBACK = '1.0.3';
+function detectVersion () {
+  for (const f of [path.join(__dirname, 'package.json'), path.join(__dirname, '..', 'package.json')]) {
+    try {
+      // 去掉 BOM：带 BOM 的 package.json 会让 JSON.parse 直接抛错。
+      // 这份仓库里的 package.json 没有 BOM，但编辑器「另存为 UTF-8」很容易加上，
+      // 那时会静默落到兜底值 —— 版本号又对不上了，且看不出为什么。
+      const raw = fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, '');
+      const v = JSON.parse(raw).version;
+      if (v) return v;
+    } catch { /* 打包后可能没有 package.json，用兜底 */ }
+  }
+  return VERSION_FALLBACK;
+}
+const VERSION = detectVersion();
 
 // ---------------- 参数 ----------------
 function argVal (name, fallback) {
