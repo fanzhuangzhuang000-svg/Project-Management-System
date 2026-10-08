@@ -124,6 +124,9 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 发票抬头是左右两栏并排，归一化删掉汉字间空格后购买方会吞掉销售方
     // （线上真实票据：「上海A公司销名称:上海B公司」当成了一个公司名）。
     ['发票购销双方', 'invoice-party-test.js'],
+    // 单据进件：AI 助手收一张发票/合同/表格进来 → 判断该录到哪张表 → 方案 → 确认落库。
+    // 识别结果直接写库，不跑 OCR，所以 CI 上也能跑（素材不入库）。
+    ['单据进件', 'ingest-test.js'],
   ];
   let suitePass = 0, suiteTotal = 0, skipped = 0;
   for (const [name, file] of SUITES) {

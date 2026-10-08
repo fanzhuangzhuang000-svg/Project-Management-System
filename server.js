@@ -22,6 +22,7 @@ const license = require('./tools/license.js');
 const docx = require('./tools/docx.js');
 const tabular = require('./tools/tabular.js');
 const { recognize, health: ocrHealth, describeBackend: describeOcrBackend } = require('./tools/ocr.js');
+const ingest = require('./tools/ingest.js');
 const { TABLES, TABLE_ORDER } = require('./schema.js');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -41,7 +42,7 @@ const APP_NAME = '弱电智能化工程项目管理系统';
  * ⚠️ 兜底常量必须和 package.json 的 version 一致 —— 由
  *    tools/version-consistency-test.js 断言，对不上 CI 直接红。
  */
-const VERSION_FALLBACK = '1.0.4';
+const VERSION_FALLBACK = '1.1.0';
 function detectVersion () {
   for (const f of [path.join(__dirname, 'package.json'), path.join(__dirname, '..', 'package.json')]) {
     try {
@@ -961,10 +962,168 @@ async function handleApi (req, res, url) {
       catch { return sendJSON(res, 400, { error: '请求格式不对' }); }
       const token = String(body.token || '');
       if (!token) return sendJSON(res, 400, { error: '缺少方案凭证' });
-      const r = ai.applyProposal(token, req.user.perms);
+      // patch：用户在确认卡片上补充/修改的字段（比如选了个所属项目）
+      const r = ai.applyProposal(token, req.user.perms, body.patch);
       if (r.error) return sendJSON(res, r.error.includes('权限') ? 403 : 400, r);
       writeLog(req, 'create', r.table, r.id, recordLabel(r.table, r.row), 'AI 助手录入（人工确认）');
       return sendJSON(res, 200, r);
+    }
+
+    // 单据进件：面板里传进来的图片 / PDF，识别完生成「待确认录入方案」
+    //
+    // 这里只负责「判断该录到哪张表」，判断逻辑在 tools/ingest.js（纯函数，可单测）。
+    // 两条通道：
+    //   ① 标准发票/合同 → 按字段直接映射，不花 token
+    //   ② 认不出类型或置信度太低 → 把摘要交给模型判断（需管理员开启「AI 录入数据」）
+    if (a === 'ingest' && method === 'POST') {
+      if (!anyRead(req.user.perms)) return deny(res, '没有查看任何模块的权限');
+      let body;
+      try { body = JSON.parse((await readRaw(req, 64 * 1024)).toString('utf8') || '{}'); }
+      catch { return sendJSON(res, 400, { error: '请求格式不对' }); }
+
+      const attId = parseInt(body.attachment_id, 10);
+      if (!attId) return sendJSON(res, 400, { error: '缺少附件 id' });
+      const row = attach.get(attId);
+      if (!row) return sendJSON(res, 404, { error: '附件不存在' });
+      // 只能给自己刚传上来的暂存件进件：别人的附件不受理（否则把别人的扫描件
+      // 挂到自己记录上，就等于拿到了原件的读取权），已经挂到记录上的也不受理
+      if (!req.user.perms.all && row.uploaded_by != null && Number(row.uploaded_by) !== Number(req.user.id)) {
+        return sendJSON(res, 403, { error: '这不是你上传的附件' });
+      }
+      if (row.table_name) return sendJSON(res, 409, { error: '这个附件已经挂在别的记录上了，请到附件中心查看' });
+
+      // 表格类文件不走识别，所以**必须排在识别状态判断之前** ——
+      // 否则会走到"这种文件不做文字识别"那条分支，用户就看不懂该干嘛了。
+      if (ingest.SHEET_EXT.has(String(row.ext || '').toLowerCase())) {
+        const plan = ingest.planFromOcr({ ext: row.ext });
+        // 顺便读一下表头，把目标表猜出来，用户少点一次（猜错也没关系，导入页能改）
+        let headers = null;
+        let rowCount = 0;
+        try {
+          const buf = fs.readFileSync(attach.absPathOf(row.stored_name));
+          const t = tabular.readTable(buf, row.original_name);
+          headers = t.headers || [];
+          rowCount = (t.rows || []).length;
+        } catch { /* .xls 之类读不了就只做引导，不猜表 */ }
+        const guess = headers && headers.length ? ingest.guessSheetTable(headers) : null;
+        return sendJSON(res, 200, {
+          ok: true, action: 'import',
+          table: guess ? guess.table : null,
+          tableLabel: guess ? guess.label : null,
+          headers: (headers || []).slice(0, 12),
+          rowCount,
+          message: plan.reason + (rowCount ? ` 这份表有 ${rowCount} 行数据。` : ''),
+        });
+      }
+
+      // 识别还在跑：如实回状态，前端接着轮询（不强等，免得多占一个请求）
+      if (row.ocr_status === 'pending' || row.ocr_status === 'running') {
+        return sendJSON(res, 200, { ok: true, status: row.ocr_status });
+      }
+      if (row.ocr_status === 'failed') {
+        return sendJSON(res, 400, { error: `识别失败：${row.ocr_error || '未知原因'}。可以到附件中心重试，或手工录入。` });
+      }
+      if (!row.ocr_fields) {
+        return sendJSON(res, 200, {
+          ok: true, action: 'none', attachmentId: row.id,
+          message: `这种文件（${row.ext || '未知类型'}）不做文字识别，可以到附件中心直接归档。`,
+        });
+      }
+
+      let ocr;
+      try { ocr = JSON.parse(row.ocr_fields); } catch { return sendJSON(res, 400, { error: '识别结果已损坏，请重新识别' }); }
+
+      const hint = String(body.hint || '').slice(0, 300);
+      // 用户附言里提到项目名时先自己匹配一次 —— 比让模型猜准得多
+      if (hint && !(ocr.suggest && ocr.suggest.project_id)) {
+        const hit = matchProjects(hint);
+        if (hit.length) {
+          ocr.suggest = { ...(ocr.suggest || {}), project_id: hit[0].id, project_name: hit[0].name, project_score: hit[0].score };
+        }
+      }
+
+      const projects = dbf.db.prepare('SELECT id, name FROM projects ORDER BY id').all();
+      const partners = dbf.db.prepare('SELECT id, name FROM partners ORDER BY id').all();
+      const refOptions = {
+        projects: projects.map(p => ({ value: p.id, label: p.name })),
+        partners: partners.map(p => ({ value: p.id, label: p.name })),
+      };
+      // 识别过程中的校验提示（金额大小写不一致之类）要带给用户，别让它们烂在库里
+      const checks = (ocr.checks || [])
+        .filter(c => c && c.level && c.level !== 'info' && c.text)
+        .map(c => c.text).slice(0, 4);
+
+      const buildProp = (tool, args, note, extraWarnings) => ai.proposeFromPlan(
+        { tool, args }, req.user.perms,
+        { attachIds: [row.id], refOptions, warnings: [...checks, ...extraWarnings], note },
+      );
+
+      /** 方案生成失败（权限、字段实在不够）也要让用户看到抽出来的字段，而不是一句报错 */
+      const replyNone = (message, extra = {}) => sendJSON(res, 200, {
+        ok: true, action: 'none', attachmentId: row.id,
+        fields: ocr.fields || {}, hints: ocr.hints || {}, checks,
+        message, ...extra,
+      });
+      const replyProp = (prop, plan, source) => {
+        if (prop && prop.error) return replyNone(prop.error);
+        writeLog(req, 'ai', null, null, String(row.original_name || '').slice(0, 40),
+          `单据进件：识别为${plan.table || plan.tool}，生成待确认录入方案`);
+        return sendJSON(res, 200, {
+          ok: true, action: 'propose', source,
+          proposal: prop, attachment: decorateAttachment(row),
+        });
+      };
+
+      const plan = ingest.planFromOcr({ ocr, ext: row.ext, name: row.original_name });
+
+      const cfg = ai.getConfig();
+      const modelReady = !!(cfg.enabled && cfg.apiKey && cfg.baseUrl && cfg.model);
+
+      // ---- 认出类型且置信度够：直接映射，不问模型 ----
+      if (plan.action === 'propose') {
+        return replyProp(buildProp(plan.tool, plan.args, '这是从你上传的原件里识别出来的录入方案。请核对，不对的地方可以直接在卡片上改。', []), plan, 'ingest');
+      }
+
+      // ---- 认不出类型 / 置信度太低：交给模型判断 ----
+      const modelUsable = modelReady && cfg.allowWrite === true && anyWrite(req.user.perms);
+
+      if (!modelUsable) {
+        if (plan.args) {
+          // 模型用不了（没配 / 没开「AI 录入数据」），确定性结果虽然弱，也好过什么都没有
+          const w = [plan.confidence === undefined
+            ? '识别置信度偏低，请逐项核对原件'
+            : `识别置信度只有 ${plan.confidence}%，请逐项核对原件`];
+          return replyProp(buildProp(plan.tool, plan.args, '识别置信度不高，我按最接近的模板填了一份，请对照原件核对。', w), plan, 'ingest-weak');
+        }
+        return replyNone(
+          modelReady
+            ? '这份文件我没认出是发票还是合同。让管理员在「系统设置 → 智能助手」里打开「AI 录入数据」，我就能判断它该录到哪张表。'
+            : '这份文件我没认出是发票还是合同。到「系统设置 → 智能助手」接上大模型后，我就能判断它该录到哪张表。',
+          { needModel: !modelReady, needAllowWrite: modelReady && cfg.allowWrite !== true },
+        );
+      }
+
+      try {
+        const summary = ingest.docSummary({ ocr, attachment: row, projects, partners, hint });
+        const cls = await ai.classifyDocument({ summary, perms: req.user.perms, hint });
+        if (cls.none) {
+          return replyNone('这份文件看起来不是要录入系统的单据。'
+            + (cls.text ? `模型说：${cls.text}` : ''), { modelSaid: cls.text || '' });
+        }
+        const table = ingest.TOOL_TABLE[cls.tool];
+        const { args, dropped } = ingest.sanitizeArgs(table, cls.args, { projects, partners });
+        return replyProp(
+          buildProp(cls.tool, args, '这是让大模型看过原件后给出的录入方案。请核对，不对的地方可以直接在卡片上改。', dropped),
+          { tool: cls.tool, table }, 'ai',
+        );
+      } catch (e) {
+        // 模型这一路失败：有确定性兜底就用兜底，并如实说明
+        if (plan.args) {
+          const w = [`模型判断失败（${e.message}），已按识别结果填了一份，请核对`];
+          return replyProp(buildProp(plan.tool, plan.args, '模型没判断成功，我按识别结果填了一份，请对照原件核对。', w), plan, 'ingest-weak');
+        }
+        return sendJSON(res, e.status || 502, { error: e.message });
+      }
     }
     // 导出 Word 报告
     if (a === 'export' && method === 'POST') {
@@ -1144,11 +1303,19 @@ async function handleApi (req, res, url) {
 
   // ---------------- 附件与识别 ----------------
   // 附件访问权：管理员任意看；普通用户对附件所属的表有查看权限即可。
-  // 暂存附件（还没挂到记录上）属于上传者自己，放行。
+  // 暂存附件（还没挂到记录上）**属于上传者自己**。
   function canSeeAttachment (row) {
     if (!row) return false;
     if (req.user.perms.all) return true;
-    if (!row.table_name) return true;                     // 暂存 / 已解除关联
+    // 暂存 / 已解除关联：没有归属表可以判权限，按上传者隔离。
+    // 这里原来是不管三七二十一 `return true` —— 等于公司里谁都能翻到别人传的
+    // 发票原图（票面含税号、开户行、银行账号）。平时偶尔传一份还不显眼，
+    // 一旦"随手把发票丢给 AI 助手"成为习惯，这就是个持续的数据泄漏口子。
+    // uploaded_by 为空的是升级前的老数据，无法归属，只能继续放行（暂存件 7 天后自动清理）。
+    if (!row.table_name) {
+      return row.uploaded_by === null || row.uploaded_by === undefined
+        || Number(row.uploaded_by) === Number(req.user.id);
+    }
     return auth.canRead(req.user.perms, row.table_name);
   }
 
@@ -1187,6 +1354,7 @@ async function handleApi (req, res, url) {
         token: fields.token || null,
         category: fields.category || null,
         projectId: fields.project_id ? parseInt(fields.project_id, 10) : null,
+        uploadedBy: req.user.id,
       });
     } catch (e) {
       return sendJSON(res, 400, { error: e.message });

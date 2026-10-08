@@ -66,6 +66,7 @@ function createTable () {
     ocr_at TEXT,
     is_demo INTEGER DEFAULT 0,
     detached INTEGER DEFAULT 0,
+    uploaded_by INTEGER,
     created_at TEXT,
     updated_at TEXT,
     tenant_id BIGINT DEFAULT 1
@@ -73,6 +74,10 @@ function createTable () {
   // 兼容老库：补上后加的列
   const cols = new Set(db.prepare('PRAGMA table_info(attachments)').all().map(r => r.name));
   if (!cols.has('detached')) db.exec('ALTER TABLE attachments ADD COLUMN detached INTEGER DEFAULT 0;');
+  // 上传者。暂存附件（还没挂到记录上）按上传者隔离 —— 没有这一列时，
+  // canSeeAttachment 只能对所有人放行，等于谁都能翻到别人传的发票原图
+  // （票面含税号、开户行、银行账号）。
+  if (!cols.has('uploaded_by')) db.exec('ALTER TABLE attachments ADD COLUMN uploaded_by INTEGER;');
   // 多租户：迁移 v4 里也想给 attachments 加 tenant_id，但那个迁移跑在 dbf.init() 里，
   // 而这张表是这里才建的 —— 和 users 表一样，v4 对它其实是空转。
   // 所以必须在这里补，否则新库永远没有这一列。
@@ -102,7 +107,7 @@ function absPathOf (storedName) {
 }
 
 // ---------------- 写入 ----------------
-function add ({ buffer, originalName, tableName, recordId, token, category, projectId }) {
+function add ({ buffer, originalName, tableName, recordId, token, category, projectId, uploadedBy }) {
   const ext = extOf(originalName);
   if (!ALLOW_EXT.has(ext)) {
     const e = new Error(`不支持的文件类型 ${ext || '(无扩展名)'}`);
@@ -124,8 +129,8 @@ function add ({ buffer, originalName, tableName, recordId, token, category, proj
   const ts = nowISO();
   const info = db.prepare(`INSERT INTO attachments
     (token, table_name, record_id, project_id, original_name, stored_name, ext, mime, size, category,
-     ocr_status, is_demo, created_at, updated_at, tenant_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`).run(
+     ocr_status, is_demo, uploaded_by, created_at, updated_at, tenant_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`).run(
     token || null,
     tableName || null,
     recordId ? parseInt(recordId, 10) : null,
@@ -137,6 +142,7 @@ function add ({ buffer, originalName, tableName, recordId, token, category, proj
     buffer.length,
     category || null,
     isOcrExt(ext) ? 'pending' : 'unsupported',
+    uploadedBy ? parseInt(uploadedBy, 10) : null,
     ts, ts,
     // 单机模式下永远是 1
     tenantCtx.stampTenant(),

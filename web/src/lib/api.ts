@@ -85,6 +85,13 @@ export interface AiBriefing {
   hint?: string
 }
 
+/** 待补的必填字段（确认卡片上直接补，不用跳去表单） */
+export interface AiEditableField {
+  label: string
+  kind: 'select' | 'text' | 'number'
+  options?: { value: any; label: string }[]
+}
+
 /** AI 生成的「待确认录入方案」：点确认才会真正写库 */
 export interface AiProposal {
   __proposal?: boolean
@@ -93,10 +100,40 @@ export interface AiProposal {
   detail: [string, any][]
   warnings: string[]
   note?: string
+  /** 必填但没填的字段（前端渲染成输入框/下拉） */
+  missing?: { name: string; label: string; kind?: string; refTable?: string | null }[]
+  /** 可补字段的说明：字段名 → 控件定义 */
+  editable?: Record<string, AiEditableField>
   /** 本地状态：等待确认 / 已保存 / 已取消 / 出错 */
   state?: 'pending' | 'applied' | 'cancelled' | 'error'
   error?: string
   appliedId?: number
+  linkedAttachments?: number
+}
+
+/** 「单据进件」的结果：上传一张发票/合同后，后端判断该录到哪张表 */
+export interface AiIngestResult {
+  ok: boolean
+  /** pending/running=还在识别；propose=给了方案；import=表格引导去导入中心；none=认不出 */
+  status?: 'pending' | 'running'
+  action?: 'propose' | 'import' | 'none'
+  /** propose 的来源：ingest=按字段映射，ai=模型判断，ingest-weak=置信度低的兜底 */
+  source?: string
+  proposal?: AiProposal
+  table?: string | null
+  /** 猜出来的目标表的显示名（表格引导用） */
+  tableLabel?: string | null
+  /** 表头前若干列 + 行数，让用户确认猜得对不对 */
+  headers?: string[]
+  rowCount?: number
+  message?: string
+  fields?: Record<string, any>
+  hints?: Record<string, any>
+  checks?: string[]
+  attachment?: any
+  needModel?: boolean
+  needAllowWrite?: boolean
+  modelSaid?: string
 }
 
 export interface AiMessage { role: 'user' | 'assistant'; content: string }
@@ -408,9 +445,15 @@ export const http = {
     /** 每日经营简报（后端当天缓存，不会重复调模型） */
     briefing: (refresh = false) => api<AiBriefing>(`/api/ai/briefing${refresh ? '?refresh=1' : ''}`),
 
-    /** 确认 AI 的录入方案（点确认后才真正写库） */
-    applyProposal: (token: string) =>
-      post<{ ok: boolean; table: string; tableLabel: string; id: number }>('/api/ai/apply', { token }),
+    /** 确认 AI 的录入方案（点确认后才真正写库）
+     *  patch：在确认卡片上补/改的字段（如选了所属项目） */
+    applyProposal: (token: string, patch?: Record<string, any>) =>
+      post<{ ok: boolean; table: string; tableLabel: string; id: number; linkedAttachments?: number; missing?: any[] }>(
+        '/api/ai/apply', { token, patch }),
+
+    /** 单据进件：把刚上传的附件交给后端判断该录到哪张表，返回待确认方案 */
+    ingest: (body: { attachmentId: number; hint?: string }) =>
+      post<AiIngestResult>('/api/ai/ingest', { attachment_id: body.attachmentId, hint: body.hint || '' }),
 
     /* 简报推送到微信/钉钉/飞书 */
     pushConfig: () => api<AiPushConfig>('/api/ai/push'),

@@ -17,6 +17,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const dbf = require('./db.js');
 const auth = require('./auth.js');
+const { TABLES } = require('./schema.js');
+const ingest = require('./tools/ingest.js');
 
 const { DATA_DIR, num, round2 } = dbf;
 const CONFIG_FILE = path.join(DATA_DIR, 'ai-config.json');
@@ -843,9 +845,10 @@ const TOOLS = [
   },
 ];
 
-/** 把工具定义转成 OpenAI 的 function calling 格式 */
-function openAiTools (withWrite) {
-  return (withWrite ? [...TOOLS, ...WRITE_TOOLS] : TOOLS).map(t => {
+/** 把工具定义转成 OpenAI 的 function calling 格式。
+ *  list 可选：显式指定要下发哪些工具（单据进件只下发有写权限的写入工具）。 */
+function openAiTools (withWrite, list) {
+  return (list || (withWrite ? [...TOOLS, ...WRITE_TOOLS] : TOOLS)).map(t => {
     const props = {};
     const required = [];
     for (const [k, v] of Object.entries(t.params)) {
@@ -866,9 +869,9 @@ function openAiTools (withWrite) {
   });
 }
 
-/** Claude 的工具格式 */
-function anthropicTools (withWrite) {
-  return (withWrite ? [...TOOLS, ...WRITE_TOOLS] : TOOLS).map(t => {
+/** Claude 的工具格式（list 可选，同 openAiTools） */
+function anthropicTools (withWrite, list) {
+  return (list || (withWrite ? [...TOOLS, ...WRITE_TOOLS] : TOOLS)).map(t => {
     const props = {};
     const required = [];
     for (const [k, v] of Object.entries(t.params)) {
@@ -1599,8 +1602,16 @@ const yuan = (v) => (Number(v) / 10000).toFixed(2) + ' 万元';
 /**
  * 执行写入工具：**只生成方案**，不落库。
  * 返回给模型的是「已生成待确认方案」，让模型把这个方案讲给用户听。
+ *
+ * @param {object} [opts]
+ *   tolerateMissing 必填项缺失时也生成方案（单据进件用：让用户在弹出的卡片上补，
+ *                   而不是只回一句"填不进去"就结束）
+ *   attachIds       确认落库后要挂到这条记录上的附件 id（传进来的扫描件/发票原件）
+ *   refOptions      可补字段的下拉选项 { projects: [...], partners: [...] }
+ *   extraWarnings   追加的提示（识别校验结果等）
+ *   note            追加在方案卡片上的说明
  */
-function proposeWrite (name, args, perms) {
+function proposeWrite (name, args, perms, opts = {}) {
   const def = WRITE_TOOL_MAP[name];
   if (!def) return { error: '未知的写入工具：' + name };
   const a = args || {};
@@ -1618,6 +1629,27 @@ function proposeWrite (name, args, perms) {
     if (v === undefined || v === null || v === '') return;
     fields[k] = v;
     detail.push([label, v]);
+  };
+
+  /**
+   * 挂项目。
+   *
+   * 对话通道（用户明确要求录入）匹配不上就直接报错，让模型去问清楚；
+   * 单据进件通道（tolerateMissing）**不能这样死** —— 发票上的金额、票号、
+   * 日期都识别对了，只因为项目名没匹配上就整份方案作废，用户还得从头上传。
+   * 这时留空项目，交给确认卡片上的下拉补（missingRequired 会列出这一项）。
+   */
+  const needProject = (v) => {
+    const p = findProject(v);
+    if (p.error) {
+      if (!opts.tolerateMissing) return { error: p.error };
+      warnings.push(p.error + '，请在下面选一个');
+      return null;
+    }
+    fields.project_id = p.id;
+    detail.push(['所属项目', p.name]);
+    if (p.ambiguous) warnings.push(`「${v}」匹配到多个项目，先用了「${p.name}」`);
+    return p;
   };
 
   switch (name) {
@@ -1639,11 +1671,8 @@ function proposeWrite (name, args, perms) {
       break;
     }
     case 'create_contract': {
-      const p = findProject(a.project);
-      if (p.error) return { error: p.error };
-      fields.project_id = p.id;
-      detail.push(['所属项目', p.name]);
-      if (p.ambiguous) warnings.push(`「${a.project}」匹配到多个项目，先用了「${p.name}」`);
+      const p = needProject(a.project);
+      if (p && p.error) return p;
       set('name', a.name, '合同名称');
       set('code', a.code, '合同编号');
       set('direction', a.direction || 'in', '收支方向（in=收入/out=支出）');
@@ -1660,24 +1689,20 @@ function proposeWrite (name, args, perms) {
       break;
     }
     case 'create_payment': {
-      const p = findProject(a.project);
-      if (p.error) return { error: p.error };
-      fields.project_id = p.id;
-      detail.push(['所属项目', p.name]);
+      const p = needProject(a.project);
+      if (p && p.error) return p;
       set('direction', a.direction || 'in', '方向（in=收款/out=付款）');
       if (a.amount !== undefined) { fields.amount = Number(a.amount); detail.push(['金额', yuan(a.amount)]); }
       set('pay_date', a.pay_date || dbf.today(), '日期');
       set('kind', a.kind, '款项性质');
       set('method', a.method, '收付方式');
       set('voucher_no', a.voucher_no, '凭证号');
-      if (a.contract) { const c = findContract(a.contract, p.id); if (c.id) fields.contract_id = c.id; else warnings.push(c.warning); }
+      if (a.contract) { const c = findContract(a.contract, p && p.id); if (c.id) fields.contract_id = c.id; else warnings.push(c.warning); }
       break;
     }
     case 'create_invoice': {
-      const p = findProject(a.project);
-      if (p.error) return { error: p.error };
-      fields.project_id = p.id;
-      detail.push(['所属项目', p.name]);
+      const p = needProject(a.project);
+      if (p && p.error) return p;
       set('invoice_no', a.invoice_no, '发票号码');
       set('direction', a.direction || 'out', '方向（out=销项/in=进项）');
       set('invoice_type', a.invoice_type || '增值税专用发票', '发票种类');
@@ -1696,10 +1721,8 @@ function proposeWrite (name, args, perms) {
       break;
     }
     case 'create_expense': {
-      const p = findProject(a.project);
-      if (p.error) return { error: p.error };
-      fields.project_id = p.id;
-      detail.push(['所属项目', p.name]);
+      const p = needProject(a.project);
+      if (p && p.error) return p;
       set('name', a.name, '费用名称');
       set('category', a.category, '费用科目');
       if (a.amount !== undefined) { fields.amount = Number(a.amount); detail.push(['金额', yuan(a.amount)]); }
@@ -1713,15 +1736,32 @@ function proposeWrite (name, args, perms) {
   }
 
   // 先干跑一遍，让必填校验在这里就拦下来（而不是用户点了确认才报错）
+  let dryError = null;
   try {
     const dry = dbf.dryRunRow(def.write, fields);
-    if (dry && dry.error) return { error: '这些信息还填不进去：' + dry.error };
+    if (dry && dry.error) dryError = dry.error;
   } catch { /* dryRun 不可用就跳过，确认时还会再校验一次 */ }
+  if (dryError && !opts.tolerateMissing) return { error: '这些信息还填不进去：' + dryError };
+
+  // 缺哪些必填项 —— 交给前端在确认卡片上补（下拉/输入框），补完再确认
+  const missing = dryError ? ingest.missingRequired(def.write, fields) : [];
+  const editable = missing.length
+    ? ingest.buildEditable(def.write, missing.map(m => m.name), opts.refOptions || {})
+    : {};
+  if (dryError && opts.tolerateMissing) {
+    warnings.push('还差这些必填信息：' + missing.map(m => m.label).join('、')
+      + '。请在下面补一下再点确认。');
+  }
+  for (const w of (opts.extraWarnings || [])) warnings.push(w);
 
   const summary = `新建${def.label}：` + detail.slice(0, 4).map(([k, v]) => `${k} ${v}`).join('｜');
   const prop = stashProposal({
     kind: 'create', table: def.write, tableLabel: def.label,
     fields, detail, warnings, summary,
+    attachIds: opts.attachIds || [],
+    missing, editable,
+    note: opts.note || null,
+    source: opts.source || 'chat',
   });
 
   return {
@@ -1730,30 +1770,188 @@ function proposeWrite (name, args, perms) {
     summary: prop.summary,
     detail: prop.detail,
     warnings: prop.warnings,
-    note: '已生成一份「待确认的录入方案」。请把它清楚地讲给用户听（有哪些字段、金额多少），'
-      + '并告诉用户点确认后才会真正保存。不要说你已经录入完成了。',
+    missing: prop.missing,
+    editable: prop.editable,
+    note: opts.note || ('已生成一份「待确认的录入方案」。请把它清楚地讲给用户听（有哪些字段、金额多少），'
+      + '并告诉用户点确认后才会真正保存。不要说你已经录入完成了。'),
   };
 }
 
-/** 用户点了确认之后，真正落库 */
-function applyProposal (token, perms) {
+/**
+ * 用户点了确认之后，真正落库。
+ *
+ * @param {object} [patch] 用户在确认卡片上补/改的字段（比如选了个所属项目）。
+ *   只认这张表真实存在的普通列 —— 不能让前端借 patch 塞进虚拟列或别的表的字段。
+ */
+function applyProposal (token, perms, patch) {
   const p = getProposal(token);
   if (!p) return { error: '这份方案已经过期或不存在了，请重新让 AI 生成一次' };
   if (!auth.canWrite(perms, p.table)) return { error: `没有录入「${p.tableLabel}」的权限` };
+
+  const fields = { ...p.fields };
+  if (patch && typeof patch === 'object') {
+    const def = TABLES[p.table];
+    const allowed = new Set(def.fields.filter(f => !f.virtual && !f.calc).map(f => f.name));
+    for (const [k, v] of Object.entries(patch)) {
+      if (!allowed.has(k)) continue;
+      fields[k] = v === '' ? null : v;
+    }
+  }
+
+  const dry = dbf.dryRunRow(p.table, fields);
+  if (dry && dry.error) {
+    return {
+      error: '这些信息还填不进去：' + dry.error,
+      missing: ingest.missingRequired(p.table, fields),
+    };
+  }
+
   let r;
   try {
-    r = dbf.insertRow(p.table, p.fields);
+    r = dbf.insertRow(p.table, fields);
   } catch (e) {
     return { error: '保存失败：' + e.message };
   }
   if (r.error) return { error: r.error };
+
+  // 传进来的那份扫描件/发票原件挂到新记录上。
+  // 失败不能把已经落库的记录说成失败 —— 如实告诉用户"记录建好了，附件没挂上"。
+  let linked = 0;
+  let linkError = null;
+  if (p.attachIds && p.attachIds.length) {
+    try {
+      linked = require('./attachments.js').linkIds(p.attachIds, p.table, r.id);
+    } catch (e) { linkError = e.message; }
+  }
+
   proposals.delete(token);
-  return { ok: true, table: p.table, tableLabel: p.tableLabel, id: r.id, row: dbf.getRow(p.table, r.id) };
+  return {
+    ok: true, table: p.table, tableLabel: p.tableLabel, id: r.id,
+    row: dbf.getRow(p.table, r.id),
+    linkedAttachments: linked,
+    linkError,
+  };
+}
+
+/* ==================== 单据进件：归类与方案 ==================== */
+
+/**
+ * 把「单据摘要」交给模型，让它判断该录到哪张表、各字段填什么。
+ *
+ * 只有确定性通道认不出来时才会走到这里（收据、对账单、送货单…，
+ * 或者识别置信度太低），所以它不需要快，需要的是判断力。
+ *
+ * 几处有意为之的取舍：
+ *   - 非流式：只要一个结构化结论，不用边生成边显示
+ *   - 只下发**当前用户有写权限的**写入工具，单轮，不做智能体循环
+ *   - 必须管理员开启「AI 录入数据」：这一路是模型在决定录什么。
+ *     而确定性那一路（标准发票/合同）不看这个开关 —— 它等价于附件中心
+ *     的"识别后填表"，那边本来就不需要开关
+ */
+async function classifyDocument ({ summary, perms, hint, signal } = {}) {
+  const cfg = getConfig();
+  if (!cfg.enabled || !cfg.apiKey || !cfg.baseUrl || !cfg.model) {
+    const e = new Error('AI 助手还没配置好，判断不了这份单据该录到哪'); e.status = 400; throw e;
+  }
+  if (cfg.allowWrite !== true) {
+    const e = new Error('管理员还没开启「AI 录入数据」，没法让模型判断这份单据该录什么'); e.status = 403; throw e;
+  }
+  const allowed = WRITE_TOOLS.filter(t => auth.canWrite(perms, t.write));
+  if (!allowed.length) { const e = new Error('当前账号没有录入任何数据的权限'); e.status = 403; throw e; }
+
+  const sys = [
+    '你是工程公司的单据归类助手。用户会把一份单据的识别结果交给你，你要判断它该录入系统的哪一类数据，并填好字段。',
+    '',
+    '规则：',
+    '1. 只处理有实际业务含义的单据：发票、合同、收付款凭证、费用票据、项目信息。',
+    '2. 判断不出、或明显不该录入的（白纸、聊天截图、与经营无关的图片），不要调用任何工具，只回复 NONE。',
+    '3. 金额单位一律是**元**。识别结果里没有的数字、日期、单号，宁可不填，绝不许编造。',
+    '4. 「所属项目」必须是下面项目清单里的，用名称原样填写；清单里没有合适的就别填（系统会提示用户补）。',
+    '5. 一次只调用一个工具。',
+    '6. 金额口径：发票 amount 是**不含税**金额、total_amount 是价税合计，两者别搞反。',
+  ].join('\n');
+  const userMsg = (hint ? `用户附言（优先采信）：${String(hint).slice(0, 300)}\n\n` : '')
+    + String(summary || '').slice(0, 8000);
+
+  const isAnthropic = cfg.protocol === 'anthropic';
+  const url = cfg.baseUrl.replace(/\/+$/, '') + (isAnthropic ? '/messages' : '/chat/completions');
+  const headers = { 'Content-Type': 'application/json' };
+  let body;
+  if (isAnthropic) {
+    headers['x-api-key'] = cfg.apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+    body = {
+      model: cfg.model, max_tokens: 900, temperature: 0.1, system: sys,
+      messages: [{ role: 'user', content: userMsg }],
+      tools: anthropicTools(false, allowed),
+    };
+  } else {
+    headers.Authorization = 'Bearer ' + cfg.apiKey;
+    body = {
+      model: cfg.model, max_tokens: 900, temperature: 0.1,
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }],
+      tools: openAiTools(false, allowed), tool_choice: 'auto',
+    };
+  }
+
+  let res;
+  try {
+    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
+  } catch (err) {
+    const e = new Error(friendlyError(err, cfg));
+    e.status = 502;
+    throw e;
+  }
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.text()).slice(0, 300); } catch { /* 读不到就算了 */ }
+    const e = new Error(`模型返回 ${res.status}${detail ? ' — ' + detail : ''}`);
+    e.status = 502;
+    throw e;
+  }
+  let json;
+  try { json = await res.json(); } catch { const e = new Error('模型返回的不是合法 JSON'); e.status = 502; throw e; }
+
+  const calls = [];
+  let textOut = '';
+  if (isAnthropic) {
+    for (const b of (json.content || [])) {
+      if (b.type === 'tool_use') calls.push({ name: b.name, args: b.input || {} });
+      else if (b.type === 'text') textOut += b.text || '';
+    }
+  } else {
+    const msg = (json.choices && json.choices[0] && json.choices[0].message) || {};
+    for (const tc of (msg.tool_calls || [])) {
+      let args = {};
+      try { args = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch { args = {}; }
+      calls.push({ name: tc.function && tc.function.name, args });
+    }
+    textOut = typeof msg.content === 'string' ? msg.content : '';
+  }
+
+  // 只受理这次真的下发过的工具（模型可能硬造一个名字出来）
+  const hit = calls.find(c => allowed.some(t => t.name === c.name));
+  const usage = json.usage || null;
+  if (!hit) return { none: true, text: String(textOut).trim().slice(0, 300), usage };
+  return { tool: hit.name, args: hit.args || {}, usage };
+}
+
+/** 单据进件 → 待确认方案（plan 是 tools/ingest.js 的 planFromOcr 结果） */
+function proposeFromPlan (plan, perms, opts = {}) {
+  return proposeWrite(plan.tool, plan.args, perms, {
+    tolerateMissing: true,
+    attachIds: opts.attachIds || [],
+    refOptions: opts.refOptions || {},
+    extraWarnings: opts.warnings || [],
+    source: 'ingest',
+    note: opts.note || '这是从你上传的原件里识别出来的录入方案。请核对，不对的地方可以直接在卡片上改。',
+  });
 }
 
 module.exports = {
   PROVIDERS, QUICK_PROMPTS, TOOLS, TOOL_LABEL, PUSH_TYPES,
   WRITE_TOOLS, WRITE_TOOL_MAP, proposeWrite, applyProposal,
+  classifyDocument, proposeFromPlan,
   getConfig, publicConfig, saveConfig,
   buildContext, chatStream, testConnection,
   executeTool, openAiTools, anthropicTools,

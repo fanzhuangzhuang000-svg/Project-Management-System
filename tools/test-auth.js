@@ -183,9 +183,10 @@ async function ensureDemoData () {
 // 上一次测试中途失败会留下残留，污染下一次断言（比如"星海科技园"已存在就不弹新建提示了）。
 // 所有 API 测试开跑前统一清一遍。
 const RESIDUE = {
-  projects: ['界面测试', '继续新增测试', 'UITEST', 'VCHK', '多子系统测试', '附件测试', '星海科技园', 'BATCHTEST', 'FEAT-', 'TEST-IMP', '导入测试'],
-  contracts: ['附件测试', 'BATCHTEST', 'FEAT-', 'TEST-', '界面测试'],
-  partners: ['界面测试', '从没见过的', '星海科技园', '新锐机电安装', '杭州智联弱电', '测试甲方建设', '测试供应商科技', '测试分包劳务', '批量删除测试', '单条删除测试', 'BATCHTEST'],
+  projects: ['界面测试', '继续新增测试', 'UITEST', 'VCHK', '多子系统测试', '附件测试', '星海科技园', 'BATCHTEST', 'FEAT-', 'TEST-IMP', '导入测试', 'AIIN-'],
+  contracts: ['附件测试', 'BATCHTEST', 'FEAT-', 'TEST-', '界面测试', 'AIIN-'],
+  invoices: ['AIIN'],
+  partners: ['界面测试', '从没见过的', '星海科技园', '新锐机电安装', '杭州智联弱电', '测试甲方建设', '测试供应商科技', '测试分包劳务', '批量删除测试', '单条删除测试', 'BATCHTEST', 'AIIN测试'],
 };
 
 async function resetTestData (token) {
@@ -210,12 +211,17 @@ async function resetTestData (token) {
     // 识别素材误建出来的发票
     const iv = await get('/api/list/invoices?q=' + encodeURIComponent('24312000000123456789'));
     for (const row of (iv.rows || [])) { await post(`/api/delete/invoices/${row.id}`, { cascade: true }); n++; }
+    // 单据进件测试建的发票（AIIN- 前缀）
+    for (const kw of (RESIDUE.invoices || [])) {
+      const r = await get('/api/list/invoices?q=' + encodeURIComponent(kw));
+      for (const row of (r.rows || [])) { await post(`/api/delete/invoices/${row.id}`, { cascade: true }); n++; }
+    }
     // 只清「测试自己传的」扫描件，按文件名识别。
     //
     // ⚠️ 这里以前是「无条件删掉所有附件」。项目里只有示例数据时看不出问题（附件数是 0），
     // 但只要用户上传过真实扫描件，就会被一起删光 —— 而 attachments.remove 走的是
     // fs.unlinkSync，不进回收站、删了找不回来。血的教训，绝不能再用无条件删除。
-    const TEST_FILE = /^(contract|invoice)\.(pdf|png|jpe?g)$|OCRTEST-|UIOCTEST-|PKGTEST-|示例-合同扫描件|import-contracts-|^probe|UI-RT-|UIBATCH-|附件测试|批量删除测试/i;
+    const TEST_FILE = /^(contract|invoice)\.(pdf|png|jpe?g)$|OCRTEST-|UIOCTEST-|PKGTEST-|示例-合同扫描件|import-contracts-|^probe|UI-RT-|UIBATCH-|附件测试|批量删除测试|AIIN-TEST-/i;
     const a = await get('/api/attachments');
     let skipped = 0;
     for (const row of (a.rows || [])) {

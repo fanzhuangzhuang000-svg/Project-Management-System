@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Upload, Download, FileSpreadsheet, CircleCheck, TriangleAlert, ArrowRight } from 'lucide-react'
 import { Button, Card, Pill, Empty, Skeleton, IconTile, Select } from '@/components/ui/primitives'
 import { useToast } from '@/components/ui/overlay'
@@ -8,8 +9,12 @@ import { cn } from '@/lib/utils'
 
 export default function ImportPage() {
   const { meta, refreshDash, refreshMeta } = useApp()
+  // AI 助手把表格文件引导过来时会带上 ?table=xxx（按表头猜的目标表），
+  // 用户少点一次；猜错了也无所谓，上面的表切换按钮还在
+  const [sp] = useSearchParams()
+  const presetTable = sp.get('table') || ''
   const [im, setIm] = useState<any>(null)
-  const [table, setTable] = useState('partners')
+  const [table, setTable] = useState(presetTable || 'partners')
   const [result, setResult] = useState<any>(null)
   const [busy, setBusy] = useState(false)
   const [autoCreate, setAutoCreate] = useState(true)

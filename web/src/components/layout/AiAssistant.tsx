@@ -2,18 +2,50 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   Bot, Send, X, Sparkles, Settings2, Square, Trash2, Loader2,
   CircleAlert, ArrowRight, User, Copy, Check, Database, FileDown,
+  Paperclip, FileSpreadsheet, ScanLine,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { http, ApiError, type AiConfig, type AiMessage, type AiProposal } from '@/lib/api'
+import { http, ApiError, type AiConfig, type AiMessage, type AiProposal, type AiIngestResult } from '@/lib/api'
 import type { Dashboard } from '@/lib/api'
 import { cn, fmtWan, n0 } from '@/lib/utils'
 import { Button, Pill } from '@/components/ui/primitives'
 import { useToast } from '@/components/ui/overlay'
+import { useApp } from '@/app-context'
 
 /** 对话在浏览器本地的存放键 */
 const CHAT_KEY = 'pms.ai.chat.v1'
 /** 面板大小记在本地，下次打开还是你调过的尺寸 */
 const SIZE_KEY = 'pms.ai.size.v1'
+
+/** 识别等待上限：扫描件 OCR 慢的时候一张要十几秒，给足 3 分钟 */
+const OCR_WAIT_MS = 3 * 60 * 1000
+/** 轮询间隔 */
+const OCR_POLL_MS = 2000
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** 识别出的字段名 → 中文（认不出类型时，把抽到的字段列给用户看） */
+const FIELD_CN: Record<string, string> = {
+  invoice_no: '发票号码', invoice_type: '发票种类', issue_date: '开票日期',
+  amount: '金额(不含税)', tax_rate: '税率(%)', tax_amount: '税额', total_amount: '价税合计',
+  code: '编号', name: '名称', sign_date: '签订日期', payment_terms: '付款条款',
+  direction: '方向', remark: '备注',
+}
+
+/** 正在处理的文件（上传→识别→判断，三个阶段给用户看着） */
+interface IngestTask { key: number; name: string; phase: 'upload' | 'ocr' | 'think' }
+
+/** 进件结果里不适合做成方案卡片的两种：表格引导、认不出 */
+interface IngestNote {
+  key: number
+  kind: 'import' | 'none'
+  title: string
+  body: string
+  /** 可跳转的动作 */
+  actionLabel?: string
+  actionTo?: string
+  fields?: [string, string][]
+}
 
 /** 取某条助手回复前面那条用户提问（导出报告时要写上"分析问题"） */
 function prevQuestion (messages: AiMessage[], i: number): string {
@@ -49,11 +81,21 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
   const [streaming, setStreaming] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  /** 正在处理的文件（上传 → 识别 → 判断，三个阶段都让用户看见） */
+  const [tasks, setTasks] = useState<IngestTask[]>([])
+  /** 进件结果里不是"录入方案"的两种：表格引导、认不出 */
+  const [notes, setNotes] = useState<IngestNote[]>([])
+  const [drag, setDrag] = useState(false)
   const nav = useNavigate()
+  const { meta } = useApp()
 
   const abortRef = useRef<AbortController | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const taskSeq = useRef(0)
+  /** 上传串行化：识别队列在服务端本来就是串行的，一次甩 5 个文件没意义还刷屏 */
+  const queueRef = useRef<Promise<void>>(Promise.resolve())
 
   /** 对话落盘 */
   useEffect(() => {
@@ -137,6 +179,8 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
     setMessages([])
     setUsage(null)
     setProposals([])
+    setNotes([])
+    setTasks([])
     setError('')
     try { localStorage.removeItem(CHAT_KEY) } catch { /* 忽略 */ }
   }, [])
@@ -216,13 +260,132 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
   const ready = cfg?.ready === true
   const canEdit = cfg?.canEdit === true
 
+  /* ---------------- 传文件进件：上传 → 识别 → 生成待确认方案 ---------------- */
+
+  /** 一份文件的完整流水线 */
+  const runIngest = useCallback(async (key: number, file: File, hint: string) => {
+    const setPhase = (phase: IngestTask['phase']) =>
+      setTasks(list => list.map(t => (t.key === key ? { ...t, phase } : t)))
+    const finish = () => setTasks(list => list.filter(t => t.key !== key))
+
+    try {
+      const up = await http.upload(file)
+      const att = up.attachment
+      if (!att || !att.id) throw new Error('上传没有返回附件')
+
+      // 图片 / PDF 上传后服务端自动进识别队列，这里等它跑完（扫描件慢，给 3 分钟）
+      setPhase('ocr')
+      let status = att.ocr_status
+      const t0 = Date.now()
+      while ((status === 'pending' || status === 'running') && Date.now() - t0 < OCR_WAIT_MS) {
+        await sleep(OCR_POLL_MS)
+        try {
+          const one = await http.attachment(att.id)
+          status = one?.ocr_status || status
+        } catch { /* 单次查询失败就再等一轮，不要因此判失败 */ }
+      }
+
+      setPhase('think')
+      const r = await http.ai.ingest({ attachmentId: att.id, hint })
+
+      if (r.status === 'pending' || r.status === 'running') {
+        // 超过等待上限还没识别完：如实说，不能假装失败也不能假装成功
+        throw new Error('识别还在进行中（扫描件较慢）。稍后到「附件中心」能看到结果。')
+      }
+
+      finish()
+
+      if (r.action === 'propose' && r.proposal) {
+        setProposals(list => [...list, { ...r.proposal!, state: 'pending' }])
+        return
+      }
+      if (r.action === 'import') {
+        const label = r.tableLabel || (r.table ? (meta?.tables?.[r.table]?.label || r.table) : '')
+        setNotes(list => [...list, {
+          key, kind: 'import',
+          title: `「${file.name}」是表格文件`,
+          body: (r.message || '') + (label ? ` 看表头像是「${label}」的数据。` : ''),
+          actionLabel: '去批量导入',
+          actionTo: r.table ? `/import?table=${r.table}` : '/import',
+        }])
+        return
+      }
+
+      const fields = Object.entries(r.fields || {})
+        .filter(([, v]) => v !== null && v !== undefined && v !== '')
+        .slice(0, 6)
+        .map(([k, v]) => [FIELD_CN[k] || k, String(v)] as [string, string])
+      setNotes(list => [...list, {
+        key, kind: 'none',
+        title: `「${file.name}」我没法直接录入`,
+        body: r.message || '这份文件里没有能录入系统的信息。',
+        actionLabel: '去附件中心处理',
+        actionTo: '/attachments',
+        fields,
+      }])
+    } catch (e) {
+      finish()
+      const msg = e instanceof ApiError ? e.message : ((e as Error)?.message || '处理失败')
+      setNotes(list => [...list, {
+        key, kind: 'none',
+        title: `「${file.name}」没处理成功`,
+        body: msg,
+      }])
+    }
+  }, [meta])
+
+  /**
+   * 收文件入口：选文件 / 拖进来 / 粘贴图片都走这里。
+   *
+   * 输入框里先打的字会被当成**附言**用（"这是万祥项目的发票"），
+   * 比让模型自己猜项目准得多 —— 所以打完字再拖文件，别反过来。
+   */
+  const takeFiles = useCallback((files: FileList | File[] | null) => {
+    const arr = files ? Array.from(files as File[]) : []
+    if (!arr.length) return
+    const hint = input.trim()
+    if (hint) setInput('')
+    for (const f of arr) {
+      const key = ++taskSeq.current
+      setTasks(list => [...list, { key, name: f.name, phase: 'upload' }])
+      setMessages(m => [...m, { role: 'user', content: hint ? `📎 ${f.name}（附言：${hint}）` : `📎 ${f.name}` }])
+      // 串行：服务端识别队列本来就是串行的，一次甩 5 个文件只会刷屏
+      queueRef.current = queueRef.current.then(() => runIngest(key, f, hint)).catch(() => { /* runIngest 内部已兜底 */ })
+    }
+  }, [input, runIngest])
+
   return (
     <div className="pointer-events-none fixed inset-0 z-[500]">
       {open && (
         <div
           className="pointer-events-auto absolute bottom-6 right-6 flex flex-col overflow-hidden rounded-card bg-surface shadow-pop"
           style={{ width: size.w, height: size.h }}
+          onDragOver={e => { e.preventDefault(); if (!drag) setDrag(true) }}
+          onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrag(false) }}
+          onDrop={e => {
+            e.preventDefault()
+            setDrag(false)
+            takeFiles(e.dataTransfer?.files || null)
+          }}
+          onPaste={e => {
+            // 截图直接粘贴进来（Ctrl+V）
+            const items = Array.from(e.clipboardData?.items || [])
+            const files = items.filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean) as File[]
+            const list = files.length ? files : Array.from(e.clipboardData?.files || [])
+            if (list.length) { e.preventDefault(); takeFiles(list) }
+          }}
         >
+          {/* 拖拽悬停：整块面板变投放区 */}
+          {drag && (
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-1.5 text-white"
+              style={{ background: 'rgba(59,130,246,.95)' }}>
+              <Paperclip size={24} />
+              <span className="text-body font-semibold">松开就上传</span>
+              <span className="px-8 text-center text-tiny leading-relaxed text-white/85">
+                发票、合同、收据的图片和 PDF 会自动识别；表格会引导你去批量导入
+              </span>
+            </div>
+          )}
           {/* 缩放手柄：面板钉在右下角，所以手柄放左上角，
               往左上拖变大、往右下拖变小 */}
           <div
@@ -287,6 +450,57 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
                 streaming={streaming && i === messages.length - 1 && m.role === 'assistant'} />
             ))}
 
+            {/* 正在处理的文件：上传 → 识别 → 判断，三个阶段都让用户看见 */}
+            {tasks.map(t => (
+              <div key={t.key} className="flex items-center gap-2.5 rounded-card bg-surface px-3.5 py-3 shadow-soft">
+                <span className="flex h-7 w-7 flex-none items-center justify-center rounded-tile bg-slate-100 text-ink-500">
+                  <Loader2 size={14} className="animate-spin" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-tiny font-medium text-ink-900">{t.name}</div>
+                  <div className="text-[11px] text-ink-400">
+                    {t.phase === 'upload' ? '正在上传…'
+                      : t.phase === 'ocr' ? '正在识别文字…（扫描件慢一些）'
+                        : '正在判断该录到哪张表…'}
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {/* 表格引导 / 认不出：这两种给不了"待确认方案"，但要说清下一步去哪 */}
+            {notes.map(n => (
+              <div key={n.key} className="rounded-card border border-slate-200 bg-surface px-4 py-3.5 shadow-soft">
+                <div className="flex items-center gap-2">
+                  <span className={cn('flex h-6 w-6 flex-none items-center justify-center rounded-full text-white',
+                    n.kind === 'import' ? 'bg-brand' : 'bg-slate-400')}>
+                    {n.kind === 'import' ? <FileSpreadsheet size={13} /> : <CircleAlert size={13} />}
+                  </span>
+                  <span className="min-w-0 flex-1 text-body font-semibold text-ink-900">{n.title}</span>
+                  <button onClick={() => setNotes(list => list.filter(x => x.key !== n.key))}
+                    className="text-ink-300 transition-colors duration-200 hover:text-ink-500" title="知道了">
+                    <X size={13} />
+                  </button>
+                </div>
+                <div className="mt-1.5 whitespace-pre-wrap text-tiny leading-relaxed text-ink-600">{n.body}</div>
+                {n.fields && n.fields.length > 0 && (
+                  <div className="mt-2 space-y-1 rounded-tile bg-slate-50 px-3 py-2">
+                    {n.fields.map(([k, v], i) => (
+                      <div key={i} className="flex gap-2 text-tiny">
+                        <span className="w-[86px] flex-none text-ink-400">{k}</span>
+                        <span className="min-w-0 font-medium text-ink-800">{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {n.actionLabel && n.actionTo && (
+                  <button onClick={() => { nav(n.actionTo as string); setOpen(false) }}
+                    className="mt-2.5 flex items-center gap-1 text-tiny font-medium text-brand hover:underline">
+                    {n.actionLabel} <ArrowRight size={12} />
+                  </button>
+                )}
+              </div>
+            ))}
+
             {/* token 用量：让用户对花销有数 */}
             {usage && !streaming && (
               <div className="px-1 text-[11px] text-ink-300">
@@ -297,16 +511,23 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
 
             {/* AI 生成的录入方案：确认后才写库 */}
             {proposals.map((p, i) => (
-              <ProposalCard key={i} prop={p} onDecide={async (ok) => {
+              <ProposalCard key={i} prop={p} onDecide={async (ok, patch) => {
                 if (!ok) {
                   setProposals(list => list.map((x, k) => k === i ? { ...x, state: 'cancelled' } : x))
                   return
                 }
                 try {
-                  const r = await http.ai.applyProposal(p.token)
-                  setProposals(list => list.map((x, k) => k === i ? { ...x, state: 'applied', appliedId: r.id } : x))
+                  const r = await http.ai.applyProposal(p.token, patch)
+                  setProposals(list => list.map((x, k) => k === i
+                    ? { ...x, state: 'applied', appliedId: r.id, linkedAttachments: r.linkedAttachments } : x))
                 } catch (e) {
-                  setProposals(list => list.map((x, k) => k === i ? { ...x, state: 'error', error: (e as Error).message } : x))
+                  // 后端可能回了"还差哪些字段"，补进卡片让用户接着补，而不是只报个错
+                  const data = e instanceof ApiError ? e.data : null
+                  setProposals(list => list.map((x, k) => k === i
+                    ? {
+                      ...x, state: 'error', error: (e as Error).message,
+                      missing: (data && data.missing) || x.missing,
+                    } : x))
                 }
               }} />
             ))}
@@ -345,6 +566,14 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
               </div>
             )}
             <div className="flex items-end gap-2">
+              {/* 传文件：不需要配大模型也能用（识别 + 按字段填表这条路不花 token） */}
+              <button onClick={() => fileRef.current?.click()} title="上传发票 / 合同 / 表格"
+                className="flex h-10 w-10 flex-none items-center justify-center rounded-tile bg-slate-50 text-ink-500 transition-colors duration-200 hover:bg-slate-100 hover:text-brand">
+                <Paperclip size={16} />
+              </button>
+              <input ref={fileRef} type="file" multiple hidden
+                accept={meta?.upload?.accept}
+                onChange={e => { takeFiles(e.target.files); e.target.value = '' }} />
               <textarea
                 ref={inputRef}
                 value={input}
@@ -359,7 +588,7 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
                 }}
                 rows={1}
                 disabled={!ready}
-                placeholder={ready ? '问点什么…（Enter 发送，Shift+Enter 换行）' : '配置大模型后即可提问'}
+                placeholder={ready ? '问点什么…（发票图片可直接拖进来）' : '配置大模型后即可提问，文件现在也能传'}
                 className="max-h-[120px] min-h-[40px] flex-1 resize-none rounded-tile bg-slate-50 px-3.5 py-2.5 text-body text-ink-900 outline-none transition-colors duration-200 placeholder:text-ink-300 focus:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
               />
               {streaming ? (
@@ -411,9 +640,17 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
 /**
  * AI 说要录入一条数据时，不直接写库，而是弹这张卡片让用户过目。
  * 只有点了「确认录入」才会真正保存 —— 业务系统里「改对了」比「改得快」重要。
+ *
+ * 单据进件这条路上，识别经常缺一两项（最常见是"所属项目"匹配不上），
+ * 所以卡片支持就地补：补齐了才让点确认，不用退出去重传一遍。
  */
-function ProposalCard ({ prop, onDecide }: { prop: AiProposal; onDecide: (ok: boolean) => void }) {
+function ProposalCard ({ prop, onDecide }: { prop: AiProposal; onDecide: (ok: boolean, patch?: Record<string, any>) => void }) {
   const st = prop.state || 'pending'
+  const missing = prop.missing || []
+  const editable = prop.editable || {}
+  /** 用户在卡片上补/改的字段 */
+  const [patch, setPatch] = useState<Record<string, any>>({})
+  const ready2save = missing.every(m => patch[m.name] !== undefined && String(patch[m.name]).trim() !== '')
 
   return (
     <div className={cn('rounded-card border-2 px-4 py-3.5',
@@ -451,13 +688,53 @@ function ProposalCard ({ prop, onDecide }: { prop: AiProposal; onDecide: (ok: bo
         </div>
       )}
 
-      {st === 'error' && prop.error && <div className="mt-2 text-tiny text-down">{prop.error}</div>}
-      {st === 'applied' && <div className="mt-2 text-tiny text-up">已保存，可以到对应列表里查看或修改。</div>}
+      {/* 缺的必填项：直接在卡片上补（下拉/输入框），不用跳去表单再重来一遍 */}
+      {st !== 'applied' && missing.length > 0 && (
+        <div className="mt-2.5 space-y-2 rounded-tile bg-amber-50 px-3 py-2.5">
+          <div className="flex items-center gap-1.5 text-tiny font-medium text-ink-700">
+            <CircleAlert size={12} className="flex-none text-orange-500" />
+            还差这几项，补完才能保存
+          </div>
+          {missing.map(m => {
+            const ed = (editable[m.name] || {}) as { label?: string; kind?: string; options?: { value: any; label: string }[] }
+            const kind = ed.kind || 'text'
+            const val = patch[m.name] === undefined ? '' : String(patch[m.name])
+            const set = (v: string) => setPatch(p => ({ ...p, [m.name]: v }))
+            return (
+              <div key={m.name} className="flex items-center gap-2">
+                <span className="w-[84px] flex-none text-tiny text-ink-500">{ed.label || m.label}</span>
+                {kind === 'select' ? (
+                  <select value={val} onChange={e => set(e.target.value)}
+                    className="h-8 min-w-0 flex-1 rounded-tile border border-slate-200 bg-surface px-2 text-tiny text-ink-900 outline-none focus:border-brand">
+                    <option value="">请选择…</option>
+                    {(ed.options || []).map(o => (
+                      <option key={String(o.value)} value={String(o.value)}>{o.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input type={kind === 'number' ? 'number' : 'text'} value={val}
+                    onChange={e => set(e.target.value)}
+                    className="h-8 min-w-0 flex-1 rounded-tile border border-slate-200 bg-surface px-2 text-tiny text-ink-900 outline-none focus:border-brand" />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
-      {st === 'pending' && (
+      {st === 'error' && prop.error && <div className="mt-2 text-tiny text-down">{prop.error}</div>}
+      {st === 'applied' && (
+        <div className="mt-2 text-tiny text-up">
+          已保存，可以到对应列表里查看或修改。
+          {prop.linkedAttachments ? ` 原件也挂到这条记录上了（${prop.linkedAttachments} 份）。` : ''}
+        </div>
+      )}
+
+      {/* 出错也留着按钮：缺字段被拦下来时，用户补完要能再点一次 */}
+      {(st === 'pending' || st === 'error') && (
         <div className="mt-3 flex gap-2">
-          <Button size="sm" variant="primary" onClick={() => onDecide(true)}>
-            <Check size={14} /> 确认录入
+          <Button size="sm" variant="primary" disabled={!ready2save} onClick={() => onDecide(true, patch)}>
+            <Check size={14} /> {st === 'error' ? '再试一次' : '确认录入'}
           </Button>
           <Button size="sm" variant="soft" onClick={() => onDecide(false)}>取消</Button>
         </div>
