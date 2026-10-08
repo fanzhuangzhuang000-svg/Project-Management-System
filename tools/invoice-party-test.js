@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 发票购销双方名称的边界测试（纯函数，不依赖服务）
+ * 发票抬头「购销双方名称」与「备注」的边界测试（纯函数，不依赖服务）
  *
  * 起因（线上真实票据复现）：
  *   客户上传一张电子专票，识别出来的「购买方」是
@@ -14,6 +14,10 @@
  *
  * 所以名称一律在「下一个字段标签」处截断。这里把真实版式、反序版式、
  * 以及三种**不能被误截**的正常名字都钉住。
+ *
+ * 同一张票还暴露了第二个坑：备注是**竖排两字标签**（「备」在值的行首、
+ * 「注」单独占下一行），归一化后「备注」二字在整个文本里不复存在，
+ * 项目线索因此白丢 —— 见 [7]。
  *
  * 注意：素材里的公司名/税号/发票号/金额全部是**合成的**。
  *   仓库是公开的，真实票据里的税号和银行账号不能进代码库
@@ -72,6 +76,7 @@ check('开票日期不受影响', r1.fields.issue_date === '2026-09-28', String(
 check('价税合计不受影响', r1.fields.total_amount === 146900, String(r1.fields.total_amount));
 check('不含税金额按 13% 反推', r1.fields.amount === 130000, String(r1.fields.amount));
 check('税额按 13% 反推', r1.fields.tax_amount === 16900, String(r1.fields.tax_amount));
+check('真实版式的竖排备注也抽得到', r1.hints.remark === '项目材料款', JSON.stringify(r1.hints.remark));
 
 // ---------------- [2] 反序：销售方在左、购买方在右 ----------------
 console.log('\n[2] 反序版式：销售方在左 → 销售方不得吞购买方');
@@ -111,6 +116,25 @@ console.log('\n[6] 购买方名字为空时：宁可不填，也不许编一个�
 const EMPTY_BUYER = `购买方名称：销名称：${B}\n价税合计（小写） ¥1000.00`;
 check('购买方留空', buyer(EMPTY_BUYER) === null, JSON.stringify(buyer(EMPTY_BUYER)));
 check('销售方仍能抽到', seller(EMPTY_BUYER) === B, JSON.stringify(seller(EMPTY_BUYER)));
+
+// ---------------- [7] 备注：竖排两字标签 ----------------
+console.log('\n[7] 备注竖排标签：「备」在值行首、「注」独占下一行 → 项目线索不许丢');
+// 真实票据第 3 页末尾就是这两行（版式逐字一致，值换成合成内容）：
+//   备 万祥项目材料款
+//   注
+const VERTICAL = '发票号码：26312000006153870002\n价税合计（小写） ¥1000.00\n备 项目材料款\n注';
+const vR = ex.extract(VERTICAL);
+check('竖排备注抽得到', vR.hints.remark === '项目材料款', JSON.stringify(vR.hints.remark));
+check('项目线索 project_text 同步带上', vR.hints.project_text === '项目材料款', JSON.stringify(vR.hints.project_text));
+
+const ONE_LINE = '发票号码：26312000006153870003\n价税合计（小写） ¥1000.00\n备注：项目材料款';
+check('正常「备注：」写法照旧认', ex.extract(ONE_LINE).hints.remark === '项目材料款', JSON.stringify(ex.extract(ONE_LINE).hints.remark));
+
+const NOT_A_LABEL = '发票号码：26312000006153870004\n价税合计（小写） ¥1000.00\n备品备件\n注意安全';
+check('「备品备件」+「注意安全」不许被当成备注', !ex.extract(NOT_A_LABEL).hints.remark, JSON.stringify(ex.extract(NOT_A_LABEL).hints.remark));
+
+const ONE_CHAR = '发票号码：26312000006153870005\n价税合计（小写） ¥1000.00\n备 货\n注';
+check('竖排值只有 1 个字 → 宁可不填', !ex.extract(ONE_CHAR).hints.remark, JSON.stringify(ex.extract(ONE_CHAR).hints.remark));
 
 // ---------------- 汇总 ----------------
 const failed = results.filter(r => !r.ok);

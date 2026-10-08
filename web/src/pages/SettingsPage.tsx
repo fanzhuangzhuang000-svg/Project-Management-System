@@ -23,7 +23,14 @@ import { cn, fmtSize, fmtInt } from '@/lib/utils'
  *   「设置页留白太多」。所以：
  *     ① 栅格必须带 `items-start`（不拉伸）；
  *     ② 同排的矮卡放进一个 `space-y-4` 的纵向堆叠里（占同一格），
- *        让几张小卡叠起来凑够高度，而不是留一大片空。
+ *        让几张小卡叠起来凑够高度，而不是留一大片空；
+ *     ③ 叠的时候要**按实测高度配平**，别只叠一张就不管了。
+ *        第一排实测：左「界面自定义」755px，右（授权 257 + 数据在哪 314）只有
+ *        587px，底部仍空 168px。把「局域网访问地址」（138px）挪进来变成
+ *        587+16+138 = 741px，差 14px —— 这才是真的配平。
+ *        （局域网卡在窄列里会随 IP 条数换行，每多一行多 ~40px，所以只求量级
+ *         接近，不要为了对齐去写死高度。）
+ *    量高度的工具：node tools/ui-theme-audit.js --pages=settings --layout
  */
 export default function SettingsPage() {
   const { meta, refreshDash } = useApp()
@@ -215,10 +222,11 @@ export default function SettingsPage() {
         {/* 界面自定义（公司名 / 系统名 / 欢迎语）—— 放最前，换品牌第一眼就看到 */}
         <AppearanceSettingsCard />
 
-        {/* 授权 + 数据在哪：两张矮卡叠成一列，正好和左边的界面自定义差不多高 */}
+        {/* 授权 + 数据在哪 + 局域网访问地址：三张矮卡叠成一列，配平左侧「界面自定义」 */}
         <div className="space-y-4 xl:col-span-5">
           <LicenseCard />
           {whereCard}
+          {lanCard}
         </div>
 
         {/* 智能助手 */}
@@ -231,9 +239,6 @@ export default function SettingsPage() {
           <PushSettingsCard />
           {exportCard}
         </div>
-
-        {/* 局域网访问地址 */}
-        <div className="xl:col-span-12">{lanCard}</div>
       </div>
       {confirmNode}
     </div>

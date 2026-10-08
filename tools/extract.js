@@ -396,9 +396,30 @@ function extractInvoice (compact, normalized) {
   const taxNos = [...compact.matchAll(/(?:纳税人识别号|统一社会信用代码)[:：]?([0-9A-Z]{15,20})/g)].map(x => x[1]);
   if (taxNos.length) hits.tax_nos = taxNos.join(' / ');
 
-  // 备注常写着工程名称，可作为匹配已有项目的线索
+  // 备注常写着工程名称，是自动匹配已有项目的唯一线索（server.js 的 matchProjects）。
+  // 两种版式都要认：
+  //   ① 正常一行：备注：万祥项目材料款
+  //   ② **竖排两字标签**（线上真实票据复现）：PDF 文字层把「备注」拆成上下两行 ——
+  //        备 万祥项目材料款
+  //        注
+  //      而归一化会删掉汉字之间的空格（为了修「发 票 号 码」的噪声），
+  //      于是变成「备万祥项目材料款」，「备注」这两个字在整个文本里根本不存在，
+  //      只认 ① 的写法会永远抽不到备注，项目线索白丢。
+  //      判据必须严：行以「备」开头、值 ≥2 字、且下一行**只有**一个「注」字。
+  //      否则「设备台账」「备件清单」「注意安全」这类正常行会被误判成备注。
+  let remark = null;
   m = compact.match(/备注[:：]?([^\n]{4,80})/);
-  if (m) { hints.remark = m[1].trim(); hints.project_text = m[1].trim(); }
+  if (m) remark = m[1].trim();
+  if (!remark) {
+    const lines = compact.split('\n');
+    for (let i = 0; i < lines.length - 1; i++) {
+      const mm = lines[i].match(/^备([^\n]{2,80})$/);
+      if (!mm || lines[i + 1].trim() !== '注') continue;
+      const v = mm[1].trim();
+      if (v.length >= 2) { remark = v; break }
+    }
+  }
+  if (remark) { hints.remark = remark; hints.project_text = remark; }
 
   return { fields, hits, checks, parties, hints };
 }
