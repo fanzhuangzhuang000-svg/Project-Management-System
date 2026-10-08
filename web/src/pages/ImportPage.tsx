@@ -57,7 +57,7 @@ export default function ImportPage() {
                 )}
               >
                 <span className={cn('flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold',
-                  table === k ? 'bg-white/25' : 'bg-white text-ink-400')}>
+                  table === k ? 'bg-white/25' : 'bg-surface text-ink-400')}>
                   {i + 1}
                 </span>
                 <span className="text-body font-medium">{meta?.tables?.[k]?.label || k}</span>

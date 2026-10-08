@@ -141,7 +141,7 @@ export default function ProjectDetailPage() {
                 {data.attachments.map((a: any) => (
                   <a key={a.id} href={http.fileUrl(a.id, true)} target="_blank" rel="noreferrer"
                     className="group overflow-hidden rounded-tile bg-slate-50 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card">
-                    <span className="flex h-24 items-center justify-center bg-white text-ink-300">
+                    <span className="flex h-24 items-center justify-center bg-surface text-ink-300">
                       <FileText size={28} />
                     </span>
                     <span className="block truncate px-2.5 py-2 text-tiny text-ink-700">{a.original_name}</span>

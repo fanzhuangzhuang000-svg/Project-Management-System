@@ -91,7 +91,7 @@ export default function ReportsPage() {
                 {(['6', '12'] as const).map(v => (
                   <button key={v} onClick={() => setRange(v)}
                     className={cn('rounded-full px-3 py-1 text-tiny font-medium transition-all duration-200',
-                      range === v ? 'bg-white text-ink-900 shadow-soft' : 'text-ink-400 hover:text-ink-700')}>
+                      range === v ? 'bg-surface text-ink-900 shadow-soft' : 'text-ink-400 hover:text-ink-700')}>
                     近{v}个月
                   </button>
                 ))}

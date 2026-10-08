@@ -71,15 +71,16 @@ export function Topbar({
     <header
       className="sticky top-0 z-40 flex h-16 flex-none items-center gap-3 px-6"
       style={{
-        background: 'rgba(255,255,255,0.72)',
+        // 必须走变量：写死白色顶栏在深色主题下会变成一条刺眼的亮带
+        background: 'var(--topbar-bg)',
         backdropFilter: 'blur(18px) saturate(180%)',
         WebkitBackdropFilter: 'blur(18px) saturate(180%)',
-        boxShadow: '0 1px 0 rgba(148,163,184,.14), 0 8px 24px rgba(15,23,42,.03)',
+        boxShadow: '0 1px 0 var(--topbar-line), 0 8px 24px rgba(15,23,42,.03)',
       }}
     >
       {/* ---- 搜索胶囊 ---- */}
       <div ref={boxRef} className="relative w-[320px] max-w-[36vw]">
-        <div className="flex h-10 items-center gap-2 rounded-full bg-slate-100/80 px-4 transition-shadow duration-200 focus-within:bg-white"
+        <div className="flex h-10 items-center gap-2 rounded-full bg-slate-100/80 px-4 transition-shadow duration-200 focus-within:bg-surface"
           style={{ boxShadow: 'inset 0 0 0 0 transparent' }}>
           <Search size={16} className="flex-none text-ink-400" />
           <input
@@ -96,7 +97,7 @@ export function Topbar({
         </div>
 
         {hits && (
-          <div className="absolute left-0 right-0 top-12 max-h-[60vh] overflow-y-auto rounded-card bg-white p-2 shadow-pop animate-float-in">
+          <div className="absolute left-0 right-0 top-12 max-h-[60vh] overflow-y-auto rounded-card bg-surface p-2 shadow-pop animate-float-in">
             {busy && !hits.length && <div className="px-3 py-4 text-center text-tiny text-ink-400">搜索中…</div>}
             {!busy && !hits.length && <div className="px-3 py-4 text-center text-tiny text-ink-400">没有找到匹配的记录</div>}
             {hits.slice(0, 20).map((h, i) => (
@@ -164,7 +165,7 @@ export function Topbar({
           </button>
 
           {menuOpen && (
-            <div className="absolute right-0 top-14 w-52 rounded-card bg-white p-2 shadow-pop animate-float-in">
+            <div className="absolute right-0 top-14 w-52 rounded-card bg-surface p-2 shadow-pop animate-float-in">
               <div className="px-3 pb-2 pt-1">
                 <div className="text-body font-semibold text-ink-900">{user.name}</div>
                 <div className="text-tiny text-ink-400">@{user.username}</div>

@@ -42,8 +42,8 @@ export function LicenseBanner () {
         )}
       </span>
       <Link to="/settings"
-        className={cn('flex flex-none items-center gap-1 rounded-full bg-white/70 px-2.5 py-1 font-medium transition-colors duration-200',
-          expired ? 'text-red-700 hover:bg-white' : 'text-amber-800 hover:bg-white')}>
+        className={cn('flex flex-none items-center gap-1 rounded-full bg-surface/70 px-2.5 py-1 font-medium transition-colors duration-200',
+          expired ? 'text-red-700 hover:bg-surface' : 'text-amber-800 hover:bg-surface')}>
         <KeyRound size={12} /> 去填授权码
       </Link>
       {!expired && (

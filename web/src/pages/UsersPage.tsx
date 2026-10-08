@@ -336,7 +336,7 @@ function UserForm({
                 </thead>
                 <tbody>
                   {tables.map(t => (
-                    <tr key={t} className="bg-white/60">
+                    <tr key={t} className="bg-surface/60">
                       <td className="px-4 py-1.5 text-ink-700">{MODULE_LABEL[t] || t}</td>
                       <td className="py-1.5 text-center">
                         <input type="checkbox" className="h-4 w-4 cursor-pointer accent-blue-500"

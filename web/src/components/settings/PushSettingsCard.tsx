@@ -34,7 +34,7 @@ export function PushSettingsCard () {
     http.ai.pushConfig().then(apply).catch(() => { /* 没权限就整块不显示 */ })
   }, [])
 
-  if (!cfg) return <Card className="xl:col-span-12"><div className="px-5 pt-5 pb-3 text-cardtitle text-ink-700">简报推送</div><div className="px-5 pb-5"><Skeleton className="h-24" /></div></Card>
+  if (!cfg) return <Card><div className="px-5 pt-5 pb-3 text-cardtitle text-ink-700">简报推送</div><div className="px-5 pb-5"><Skeleton className="h-24" /></div></Card>
 
   const types = cfg.types || []
   const addChannel = () => {
@@ -76,7 +76,7 @@ export function PushSettingsCard () {
   }
 
   return (
-    <Card className="xl:col-span-12">
+    <Card>
       <div className="flex flex-wrap items-center gap-3 px-5 pt-5 pb-3">
         <IconTile icon={Bell} tone="warm" size="sm" />
         <span className="text-cardtitle text-ink-700">简报推送</span>

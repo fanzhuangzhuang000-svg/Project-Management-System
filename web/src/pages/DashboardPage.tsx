@@ -153,8 +153,8 @@ export default function DashboardPage() {
             <h1 className="text-[28px] font-bold leading-tight" style={{ color: 'var(--banner-title)' }}>
               {welcomeText}
             </h1>
-            <p className="mt-2 text-[16px] font-semibold" style={{ color: 'var(--ink-900)' }}>{subtitleText}</p>
-            <p className="mt-1 text-[13px]" style={{ color: 'var(--ink-500)' }}>
+            <p className="mt-2 text-[16px] font-semibold" style={{ color: 'rgb(var(--c-ink-900))' }}>{subtitleText}</p>
+            <p className="mt-1 text-[13px]" style={{ color: 'rgb(var(--c-ink-500))' }}>
               {String(S.welcome_subtitle || '平台布局更清晰，数据管理更便捷，组件样式更美观，给您带来全新产品体验')}
             </p>
           </div>
@@ -200,7 +200,7 @@ export default function DashboardPage() {
             {(['week', 'month'] as const).map(v => (
               <button key={v} onClick={() => setRange(v)}
                 className={cn('rounded-full px-3.5 py-1 text-tiny font-medium transition-all duration-200',
-                  range === v ? 'bg-white text-ink-900 shadow-soft' : 'text-ink-400 hover:text-ink-700')}
+                  range === v ? 'bg-surface text-ink-900 shadow-soft' : 'text-ink-400 hover:text-ink-700')}
                 style={range === v ? { background: 'var(--card-bg)' } : undefined}>
                 {v === 'week' ? '本周' : '本月'}
               </button>
@@ -320,7 +320,8 @@ function TodoDonut ({ slices }: { slices: { label: string; value: number; color:
   let acc = 0
   return (
     <svg viewBox="0 0 160 160" className="h-full w-full -rotate-90">
-      <circle cx="80" cy="80" r={R} fill="none" stroke="var(--tile-bg)" strokeWidth="16" />
+      {/* 底色环不能用 stroke="var(...)" —— SVG 属性里 var() 不解析，环会整圈消失 */}
+      <circle cx="80" cy="80" r={R} fill="none" style={{ stroke: 'var(--tile-bg)' }} strokeWidth="16" />
       {slices.map(s => {
         const len = (s.value / total) * C
         const el = (

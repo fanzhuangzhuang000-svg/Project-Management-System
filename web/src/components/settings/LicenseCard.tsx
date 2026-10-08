@@ -54,7 +54,7 @@ export function LicenseCard () {
   const st = info?.status || 'none'
 
   return (
-    <Card className="xl:col-span-5">
+    <Card>
       <div className="flex flex-wrap items-center gap-3 px-5 pt-5 pb-3">
         <IconTile icon={KeyRound} tone={st === 'ok' ? 'green' : st === 'expired' || st === 'invalid' ? 'warm' : 'cyan'} size="md" />
         <div className="min-w-0 flex-1">

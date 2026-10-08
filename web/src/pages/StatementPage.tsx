@@ -70,7 +70,7 @@ export default function StatementPage() {
             { k: '应收未收', v: s.receivable, tone: n0(s.receivable) > 0 ? 'text-down' : 'text-up' },
             { k: '回款率', v: null, extra: `${n0(s.collect_rate).toFixed(1)}%`, tone: 'text-brand' },
           ].map((x, i) => (
-            <div key={i} className="bg-white px-4 py-3.5">
+            <div key={i} className="bg-surface px-4 py-3.5">
               <div className="text-tiny text-ink-400">{x.k}</div>
               <div className={cn('mt-1 text-[19px] font-bold tnum', x.tone)}>
                 {x.extra ?? `¥${fmtMoney(x.v)}`}

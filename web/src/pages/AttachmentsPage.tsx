@@ -95,7 +95,7 @@ export default function AttachmentsPage() {
         onDrop={e => { e.preventDefault(); setDrag(false); void doUpload(e.dataTransfer.files) }}
         className={cn(
           'flex flex-col items-center justify-center gap-2 rounded-card py-8 transition-all duration-200',
-          drag ? 'bg-blue-50 ring-2 ring-blue-300' : 'bg-white/60',
+          drag ? 'bg-blue-50 ring-2 ring-blue-300' : 'bg-surface/60',
         )}
         style={{ boxShadow: '0 8px 30px rgba(99,102,241,.06)' }}
       >
@@ -127,7 +127,7 @@ export default function AttachmentsPage() {
               return (
                 <div key={a.id} className="group overflow-hidden rounded-tile bg-slate-50 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card">
                   <a href={http.fileUrl(a.id, true)} target="_blank" rel="noreferrer"
-                    className="flex h-[104px] items-center justify-center overflow-hidden bg-white">
+                    className="flex h-[104px] items-center justify-center overflow-hidden bg-surface">
                     {img
                       ? <img src={http.fileUrl(a.id, true)} alt={a.original_name} className="h-full w-full object-cover" loading="lazy" />
                       : <span className="flex flex-col items-center gap-1 text-ink-300">
@@ -337,7 +337,7 @@ function OcrPanel({
                 <button
                   key={opt}
                   onClick={() => { preset.invoice_type = opt; setPresetVer(v => v + 1) }}
-                  className="rounded-full bg-white px-2.5 py-0.5 text-tiny font-medium text-brand shadow-soft transition-colors duration-200 hover:bg-brand hover:text-white"
+                  className="rounded-full bg-surface px-2.5 py-0.5 text-tiny font-medium text-brand shadow-soft transition-colors duration-200 hover:bg-brand hover:text-white"
                 >
                   {opt}
                 </button>
@@ -357,7 +357,7 @@ function OcrPanel({
             </thead>
             <tbody>
               {shownFields.map(([k, v]) => (
-                <tr key={k} className="bg-white/70">
+                <tr key={k} className="bg-surface/70">
                   <td className="px-4 py-2 text-ink-500">{FIELD_LABEL[k] || k}</td>
                   <td className="px-4 py-2 font-medium text-ink-900">
                     {MONEY_FIELDS.has(k) ? `¥${fmtMoney(v)}` : String(v)}
@@ -446,17 +446,17 @@ function OcrPanel({
                 {([['normalized', '归一化后'], ['raw', 'OCR 原始输出']] as const).map(([k, label]) => (
                   <button key={k} onClick={() => setRawTab(k)}
                     className={cn('rounded-full px-2.5 py-1 text-tiny transition-colors duration-200',
-                      rawTab === k ? 'bg-brand text-white' : 'bg-white text-ink-500 hover:text-ink-800')}>
+                      rawTab === k ? 'bg-brand text-white' : 'bg-surface text-ink-500 hover:text-ink-800')}>
                     {label}
                   </button>
                 ))}
                 <button onClick={copyRaw}
-                  className="ml-auto rounded-full bg-white px-2.5 py-1 text-tiny text-ink-500 transition-colors duration-200 hover:text-ink-800">
+                  className="ml-auto rounded-full bg-surface px-2.5 py-1 text-tiny text-ink-500 transition-colors duration-200 hover:text-ink-800">
                   {rawCopied ? '已复制' : '复制全文'}
                 </button>
               </div>
 
-              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-tile bg-white p-3 font-mono text-[11px] leading-relaxed text-ink-600">
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-tile bg-surface p-3 font-mono text-[11px] leading-relaxed text-ink-600">
                 {(rawTab === 'normalized' ? raw.normalized : raw.text) || '（空）'}
               </pre>
 

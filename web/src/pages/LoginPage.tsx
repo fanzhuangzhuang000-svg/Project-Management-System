@@ -71,7 +71,7 @@ export default function LoginPage({ firstRun, initialMsg }: { firstRun: boolean;
       <span className="pointer-events-none fixed -right-20 top-1/3 h-[380px] w-[380px] rounded-full bg-violet-400/20 blur-[90px]" />
       <span className="pointer-events-none fixed bottom-0 left-1/3 h-[320px] w-[320px] rounded-full bg-cyan-300/20 blur-[90px]" />
 
-      <div className="relative z-10 grid w-full max-w-[880px] overflow-hidden rounded-card bg-white shadow-pop lg:grid-cols-[1.05fr_1fr]">
+      <div className="relative z-10 grid w-full max-w-[880px] overflow-hidden rounded-card bg-surface shadow-pop lg:grid-cols-[1.05fr_1fr]">
         {/* ---- 左：品牌区 ---- */}
         <div className="grad-brand relative hidden flex-col justify-between p-9 text-white lg:flex">
           <div className="relative z-10">

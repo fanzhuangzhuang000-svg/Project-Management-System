@@ -136,7 +136,7 @@ export function Avatar({
           </span>
         )}
       {online && (
-        <span className="absolute -bottom-0 -right-0 h-3 w-3 rounded-full border-2 border-white bg-emerald-500" />
+        <span className="absolute -bottom-0 -right-0 h-3 w-3 rounded-full border-2 border-surface bg-emerald-500" />
       )}
     </span>
   )
@@ -150,12 +150,12 @@ export function AvatarGroup({ names, max = 3, size = 28 }: { names: (string | nu
     <span className="flex items-center">
       {shown.map((n, i) => (
         <span key={i} style={{ marginLeft: i ? -8 : 0 }}>
-          <Avatar name={n} size={size} className="ring-2 ring-white" />
+          <Avatar name={n} size={size} className="ring-2 ring-surface" />
         </span>
       ))}
       {rest > 0 && (
         <span
-          className="flex items-center justify-center rounded-full bg-slate-100 font-medium text-ink-500 ring-2 ring-white"
+          className="flex items-center justify-center rounded-full bg-slate-100 font-medium text-ink-500 ring-2 ring-surface"
           style={{ width: size, height: size, marginLeft: -8, fontSize: Math.round(size * 0.32) }}
         >
           +{rest}

@@ -5,23 +5,75 @@
 /* ==========================================================================
    设计基调：玻璃拟态 + 轻量新拟物
    层级关系全靠阴影和背景色差表达 —— 全局不出现 1px 灰色实边框
+
+   ⚠️ 主题色板的两条铁律（改这个文件前先读）：
+   1. **不要在组件里写死调色板类**（bg-white / bg-slate-50 / bg-red-50 …）。
+      浅色主题下它们看不出问题，切到深色就是一块刺眼的亮斑。
+      表面用 bg-surface / bg-subtle / bg-subtle-strong / bg-track，
+      彩色底用 bg-red-50 这类「色调色板」（下面已把 50/100/200/600/700/800
+      全部接到 CSS 变量上，深浅自动切换，不用写 dark: 变体）。
+   2. Tailwind 的颜色变量一律写成「RGB 三元组」（255 255 255），
+      而不是 #FFFFFF —— 只有这样 `bg-surface/70` 这种透明度写法才生效。
+   3. 改完必须跑 `node tools/ui-theme-audit.js`：它会全量扫出深色主题下
+      所有实际亮度超标的元素，写死颜色一个都跑不掉。
    ========================================================================== */
 
 /* ---- 深浅主题变量（html[data-theme] 切换，localStorage 记忆）---- */
 :root {
+  /* 表面层级：卡片 → 次级块 → 三级块 → 轨道/分隔 */
+  --c-surface: 255 255 255;
+  --c-surface-2: 248 250 252;
+  --c-surface-3: 241 245 249;
+  --c-track: 226 232 240;
+  --c-line: 148 163 184;
+  --c-base: 240 244 255;
+  --c-input: 255 255 255;
+  --c-warn: 217 119 6;
+
+  /* 文字层级 */
+  --c-ink-900: 15 23 42;
+  --c-ink-800: 30 41 59;
+  --c-ink-700: 51 65 85;
+  --c-ink-600: 71 85 105;
+  --c-ink-500: 100 116 139;
+  --c-ink-400: 148 163 184;
+
+  /* 彩色底（药丸标签 / 提示块 / 危险按钮）：bg / bg-strong / border / fg / fg-strong */
+  --c-red-bg: 254 242 242;      --c-red-bg-strong: 254 226 226;
+  --c-red-border: 254 202 202;  --c-red-fg: 220 38 38;      --c-red-fg-strong: 185 28 28;
+  --c-amber-bg: 255 251 235;    --c-amber-bg-strong: 254 243 199;
+  --c-amber-border: 253 230 138; --c-amber-fg: 217 119 6;   --c-amber-fg-strong: 180 83 9;
+  --c-orange-bg: 255 247 237;   --c-orange-bg-strong: 255 237 213;
+  --c-orange-border: 254 215 170; --c-orange-fg: 234 88 12; --c-orange-fg-strong: 194 65 12;
+  --c-blue-bg: 239 246 255;     --c-blue-bg-strong: 219 234 254;
+  --c-blue-border: 191 219 254; --c-blue-fg: 37 99 235;     --c-blue-fg-strong: 29 78 216;
+  --c-green-bg: 240 253 244;    --c-green-bg-strong: 220 252 231;
+  --c-green-border: 187 247 208; --c-green-fg: 22 163 74;   --c-green-fg-strong: 21 128 61;
+  --c-emerald-bg: 236 253 245;  --c-emerald-bg-strong: 209 250 229;
+  --c-emerald-border: 167 243 208; --c-emerald-fg: 5 150 105; --c-emerald-fg-strong: 4 120 87;
+  --c-violet-bg: 245 243 255;   --c-violet-bg-strong: 237 233 254;
+  --c-violet-border: 221 214 254; --c-violet-fg: 124 58 237; --c-violet-fg-strong: 109 40 217;
+  --c-cyan-bg: 236 254 255;     --c-cyan-bg-strong: 207 250 254;
+  --c-cyan-border: 165 243 252; --c-cyan-fg: 8 145 178;     --c-cyan-fg-strong: 14 116 144;
+
+  /* 阴影（深色下不能再用浅色阴影，否则浮层"贴"不到页面上） */
+  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.04);
+  --shadow-hover: 0 12px 40px rgba(99, 102, 241, 0.12);
+  --shadow-soft: 0 4px 16px rgba(99, 102, 241, 0.05);
+  --shadow-glass: 0 2px 20px rgba(15, 23, 42, 0.04);
+  --shadow-pop: 0 16px 48px rgba(15, 23, 42, 0.14);
+
+  /* 页面底色与光斑（body::before 用） */
+  --bg-base: #F0F4FF;
   --bg-canvas: linear-gradient(160deg, #F0F4FF 0%, #F8FAFC 52%, #F5F7FF 100%);
   --bg-spot-1: rgba(59, 130, 246, 0.10);
   --bg-spot-2: rgba(139, 92, 246, 0.10);
   --bg-spot-3: rgba(6, 182, 212, 0.07);
-  --card-bg: #FFFFFF;
-  --card-glass-bg: rgba(255, 255, 255, 0.72);
-  --ink-900: #0F172A;
-  --ink-700: #334155;
-  --ink-500: #64748B;
-  --ink-400: #94A3B8;
-  --tile-bg: #F1F5F9;
-  --tile-bg-hover: #E2E8F0;
-  --input-bg: #FFFFFF;
+  --card-bg: rgb(var(--c-surface));
+  --card-glass-bg: rgb(var(--c-surface) / 0.72);
+  --tile-bg: rgb(var(--c-surface-3));
+  --tile-bg-hover: rgb(var(--c-track));
+  --input-bg: rgb(var(--c-input));
   --input-ink: #1F2937;
   --input-placeholder: #9CA3AF;
   --scroll-thumb: rgba(148, 163, 184, 0.35);
@@ -37,19 +89,53 @@
 }
 
 html[data-theme='dark'] {
+  --c-surface: 30 41 59;
+  --c-surface-2: 41 53 73;
+  --c-surface-3: 51 65 85;
+  --c-track: 71 85 105;
+  --c-line: 148 163 184;
+  --c-base: 15 23 42;
+  --c-input: 51 65 85;
+  --c-warn: 252 211 77;
+
+  --c-ink-900: 241 245 249;
+  --c-ink-800: 241 245 249;
+  --c-ink-700: 203 213 225;
+  --c-ink-600: 203 213 225;
+  --c-ink-500: 148 163 184;
+  --c-ink-400: 100 116 139;
+
+  /* 彩色底：把 15% / 25% 的色调压到卡片色上算成实色（#1E293B 为底），
+     文字反过来用该色调的 300/200 号色 —— 保证深色下也是「彩而不刺眼」 */
+  --c-red-bg: 61 45 60;         --c-red-bg-strong: 82 48 61;
+  --c-red-border: 185 28 28;    --c-red-fg: 252 165 165;     --c-red-fg-strong: 254 202 202;
+  --c-amber-bg: 62 59 52;       --c-amber-bg-strong: 84 70 47;
+  --c-amber-border: 180 83 9;   --c-amber-fg: 252 211 77;    --c-amber-fg-strong: 253 230 138;
+  --c-orange-bg: 63 52 53;      --c-orange-bg-strong: 85 60 50;
+  --c-orange-border: 194 65 12; --c-orange-fg: 253 186 116;  --c-orange-fg-strong: 254 215 170;
+  --c-blue-bg: 34 54 87;        --c-blue-bg-strong: 37 63 106;
+  --c-blue-border: 29 78 216;   --c-blue-fg: 147 197 253;    --c-blue-fg-strong: 191 219 254;
+  --c-green-bg: 31 64 64;       --c-green-bg-strong: 31 80 68;
+  --c-green-border: 21 128 61;  --c-green-fg: 134 239 172;   --c-green-fg-strong: 187 247 208;
+  --c-emerald-bg: 28 63 70;     --c-emerald-bg-strong: 27 77 77;
+  --c-emerald-border: 4 120 87; --c-emerald-fg: 110 231 183; --c-emerald-fg-strong: 167 243 208;
+  --c-violet-bg: 46 49 87;      --c-violet-bg-strong: 57 54 106;
+  --c-violet-border: 109 40 217; --c-violet-fg: 196 181 253; --c-violet-fg-strong: 221 214 254;
+  --c-cyan-bg: 26 62 82;        --c-cyan-bg-strong: 24 76 97;
+  --c-cyan-border: 14 116 144;  --c-cyan-fg: 103 232 249;    --c-cyan-fg-strong: 165 243 252;
+
+  /* 深色下的浮层靠「深阴影 + 一圈极淡的亮边」和页面分层，不然糊成一片 */
+  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(148, 163, 184, 0.10);
+  --shadow-hover: 0 12px 40px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(148, 163, 184, 0.16);
+  --shadow-soft: 0 4px 16px rgba(0, 0, 0, 0.30);
+  --shadow-glass: 0 2px 20px rgba(0, 0, 0, 0.30), 0 0 0 1px rgba(148, 163, 184, 0.10);
+  --shadow-pop: 0 18px 52px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(148, 163, 184, 0.14);
+
+  --bg-base: #0F172A;
   --bg-canvas: #0F172A;
   --bg-spot-1: rgba(59, 130, 246, 0.08);
   --bg-spot-2: rgba(139, 92, 246, 0.06);
   --bg-spot-3: rgba(6, 182, 212, 0.05);
-  --card-bg: #1E293B;
-  --card-glass-bg: rgba(30, 41, 59, 0.82);
-  --ink-900: #F1F5F9;
-  --ink-700: #CBD5E1;
-  --ink-500: #94A3B8;
-  --ink-400: #64748B;
-  --tile-bg: rgba(51, 65, 85, 0.55);
-  --tile-bg-hover: rgba(71, 85, 105, 0.55);
-  --input-bg: rgba(51, 65, 85, 0.55);
   --input-ink: #E5E7EB;
   --input-placeholder: #6B7280;
   --scroll-thumb: rgba(71, 85, 105, 0.6);
@@ -69,18 +155,18 @@ html[data-theme='dark'] {
   html, body, #root { height: 100%; }
 
   body {
-    color: var(--ink-900);
+    color: rgb(var(--c-ink-900));
     font-family: "Inter", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
                  "Segoe UI", system-ui, -apple-system, sans-serif;
     font-size: 13px;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background: #F0F4FF;
+    background: var(--bg-base);
     transition: background-color 300ms ease;
   }
 
-  /* 页面底色：极淡蓝紫渐变 + 两处柔和光斑（深色主题换深底） */
+  /* 页面底色：极淡蓝紫渐变 + 三处柔和光斑（深色主题换深底） */
   body::before {
     content: "";
     position: fixed;
@@ -118,18 +204,26 @@ html[data-theme='dark'] {
     color: var(--input-ink);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18), 0 1px 2px rgba(15, 23, 42, 0.04);
   }
+  /* 下拉展开后的选项列表：原生控件不吃主题变量，这里显式指定 */
+  select option { background: var(--card-bg); color: var(--input-ink); }
+  /* 自动填充别再把输入框刷成刺眼的白 */
+  input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--input-ink);
+    -webkit-box-shadow: 0 0 0 1000px var(--input-bg) inset;
+  }
+  ::selection { background: rgba(59, 130, 246, 0.28); }
 }
 
 @layer components {
-  /* ---- 卡片：白底大圆角柔光阴影，hover 上浮（深浅主题共用变量） ---- */
+  /* ---- 卡片：大圆角柔光阴影，hover 上浮（深浅主题共用变量） ---- */
   .card {
     border-radius: 20px;
     background: var(--card-bg);
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+    box-shadow: var(--shadow-card);
     transition: transform 200ms ease, box-shadow 200ms ease, background-color 300ms ease;
   }
   .card-hover:hover {
-    box-shadow: 0 12px 40px rgba(99, 102, 241, 0.12);
+    box-shadow: var(--shadow-hover);
     transform: translateY(-2px);
   }
   /* 玻璃卡片：半透明 + 背景模糊 */
@@ -138,7 +232,7 @@ html[data-theme='dark'] {
     background: var(--card-glass-bg);
     backdrop-filter: blur(16px) saturate(160%);
     -webkit-backdrop-filter: blur(16px) saturate(160%);
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+    box-shadow: var(--shadow-glass);
     transition: background-color 300ms ease;
   }
 
@@ -183,17 +277,17 @@ html[data-theme='dark'] {
     box-shadow: 0 6px 18px rgba(59, 130, 246, 0.28);
   }
   .btn-primary:hover { box-shadow: 0 10px 26px rgba(59, 130, 246, 0.38); transform: translateY(-1px); }
-  .btn-ghost { background: var(--tile-bg); color: var(--ink-700); }
+  .btn-ghost { background: var(--tile-bg); color: rgb(var(--c-ink-700)); }
   .btn-ghost:hover { background: var(--tile-bg-hover); }
-  .btn-soft { background: var(--card-bg); color: var(--ink-700); box-shadow: 0 4px 16px rgba(99, 102, 241, 0.05); }
-  .btn-soft:hover { box-shadow: 0 8px 30px rgba(99, 102, 241, 0.10); transform: translateY(-1px); }
+  .btn-soft { background: var(--card-bg); color: rgb(var(--c-ink-700)); box-shadow: var(--shadow-soft); }
+  .btn-soft:hover { box-shadow: var(--shadow-hover); transform: translateY(-1px); }
 
   /* ---- 侧栏菜单项：白底侧栏版 ----
-     选中态：浅蓝底 #EFF6FF + 蓝字 #2563EB，无左侧指示条 */
+     选中态：浅蓝底 + 蓝字，无左侧指示条 */
   .nav-item {
     @apply relative flex h-10 items-center gap-3 rounded-lg px-4 text-body
            transition-all duration-200 ease-out;
-    color: var(--ink-700);
+    color: rgb(var(--c-ink-700));
   }
   .nav-item:hover { background: rgba(59, 130, 246, 0.07); color: #2563EB; }
   .nav-item.active {
@@ -201,7 +295,7 @@ html[data-theme='dark'] {
     color: #2563EB;
     font-weight: 600;
   }
-  html[data-theme='dark'] .nav-item { color: var(--ink-500); }
+  html[data-theme='dark'] .nav-item { color: rgb(var(--c-ink-500)); }
   html[data-theme='dark'] .nav-item:hover { background: rgba(59, 130, 246, 0.12); color: #93C5FD; }
   html[data-theme='dark'] .nav-item.active { background: rgba(37, 99, 235, 0.20); color: #93C5FD; }
   /* 深色侧栏（旧主题遗留类）不再使用，但保留映射避免漏改 */
@@ -211,12 +305,12 @@ html[data-theme='dark'] {
   .tbl { @apply w-full border-separate border-spacing-0 text-body; }
   .tbl thead th {
     @apply px-4 py-3 text-left text-tiny font-semibold whitespace-nowrap;
-    color: var(--ink-400);
+    color: rgb(var(--c-ink-400));
   }
   .tbl tbody tr { @apply transition-colors duration-200; }
   .tbl tbody tr:hover { background: var(--tile-bg); }
   .tbl tbody td { @apply px-4 py-3 align-middle; }
-  .tbl tbody tr + tr td { box-shadow: inset 0 1px 0 rgba(241, 245, 249, 0.5); }
+  .tbl tbody tr + tr td { box-shadow: inset 0 1px 0 rgb(var(--c-surface-3) / 0.5); }
 
   /* 骨架屏 */
   .skeleton {
@@ -228,6 +322,7 @@ html[data-theme='dark'] {
     background: linear-gradient(90deg, rgba(51,65,85,.4) 25%, rgba(71,85,105,.4) 50%, rgba(51,65,85,.4) 75%);
     background-size: 200% 100%;
   }
+  html[data-theme='dark'] .tbl tbody tr + tr td { box-shadow: inset 0 1px 0 rgb(var(--c-track) / 0.5); }
 }
 
 @layer utilities {
@@ -243,3 +338,20 @@ html[data-theme='dark'] {
   to { opacity: 1; transform: translateY(0); }
 }
 .num-in { animation: numIn 420ms cubic-bezier(0, 0, 0.2, 1) both; }
+
+/* ==========================================================================
+   Recharts 内部元素：颜色是 JS 传进去的 SVG 属性，吃不掉 Tailwind 主题类，
+   只能在这里按主题覆盖。别删 —— 删了深色下网格线会变成一格格白线。
+   ========================================================================== */
+html[data-theme='dark'] .recharts-cartesian-grid line { stroke: #334155; }
+html[data-theme='dark'] .recharts-cartesian-axis-tick text { fill: #94A3B8; }
+html[data-theme='dark'] .recharts-tooltip-cursor { stroke: #64748B !important; }
+html[data-theme='dark'] .recharts-pie-sector[fill='#E2E8F0'] { fill: #334155; }
+/* Banner 右侧的蓝图卷轴插画：纸面是写死的白/浅蓝渐变，深色下会变成深底上
+   贴着一大张白纸。这里把纸面压暗（渐变用 CSS 覆盖 stop-color）。 */
+html[data-theme='dark'] #scrollBody stop:first-child { stop-color: #64748B; }
+html[data-theme='dark'] #scrollBody stop:last-child { stop-color: #1E293B; }
+/* 打印/导出：把浮层和动画收掉，避免导出 PDF 时多出灰块 */
+@media print {
+  .no-print { display: none !important; }
+}

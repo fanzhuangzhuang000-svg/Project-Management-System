@@ -1100,14 +1100,43 @@ npm run dev               :: 起在 5173，自动代理 /api 到 8787
 | 用途 | 值 |
 |---|---|
 | 品牌渐变 | `linear-gradient(135deg, #3B82F6, #6366F1)` |
-| 侧边栏 | `linear-gradient(180deg, #0F172A, #1E293B)` |
-| 页面底色 | `radial-gradient` 光斑 + `linear-gradient(160deg, #F0F4FF, #F8FAFC)` |
-| 页面大标题 | 24px / 700 / #0F172A（欢迎语 28px） |
-| 卡片标题 | 14px / 600 / #334155 |
-| 数据大数字 | 32px / 800 / #0F172A，单位单独小字 |
-| 正文 / 辅助 | 13px / #64748B　·　12px / #94A3B8 |
+| 侧边栏 | 白色 220px（深色主题 `--c-surface`），选中项浅蓝底 `#EFF6FF` + 蓝字 |
+| 页面底色 | `radial-gradient` 光斑 + `linear-gradient(160deg, #F0F4FF, #F8FAFC)`（深色换 `#0F172A`） |
+| 页面大标题 | 24px / 700 / `--c-ink-900`（欢迎语 28px） |
+| 卡片标题 | 14px / 600 / `--c-ink-700` |
+| 数据大数字 | 32px / 800 / `--c-ink-900`，单位单独小字 |
+| 正文 / 辅助 | 13px / `--c-ink-500`　·　12px / `--c-ink-400` |
 | 上涨 / 下跌 | #10B981 ↑　·　#EF4444 ↓ |
 | 图标底块 | 44×44，圆角 12px，蓝紫/紫/橙红/青/绿五种渐变 |
+
+#### 深色主题怎么改颜色（三条铁律，踩过两次坑）
+
+深浅主题全靠 `src/index.css` 里 `:root` / `html[data-theme='dark']` 两组 CSS 变量驱动，
+组件里 **不要写死颜色类**：
+
+1. **表面用语义名**：`bg-surface`（卡片/弹窗/下拉）、`bg-subtle`（次级块）、
+   `bg-subtle-strong`（三级块 / hover）、`bg-track`（进度槽、分隔线）。
+   `bg-white` / `bg-slate-50` / `bg-slate-100` 在浅色主题下看不出问题，
+   切到深色就是一块刺眼的白斑 —— 这是本系统最常见的回归。
+2. **颜色变量写成 RGB 三元组**（`--c-surface: 30 41 59`），不要写 `#1E293B`；
+   只有这样 `bg-surface/70` 这种透明度写法才生效。
+3. **彩色底直接用 Tailwind 名字**：`bg-red-50` / `text-red-600` / `border-red-200`
+   这几个「当底色和当彩色字」的档位已经接到变量上了，深浅自动切换，
+   不需要写 `dark:` 变体。目前映射了 red / amber / orange / blue / green /
+   emerald / violet / cyan 八个色调；用别的色调（如 `yellow-50`）要先到
+   `index.css` 里补 `--c-yellow-*` 变量，否则它不跟主题。
+
+改完**必须跑**这个审计（无头 Edge 全量扫，会按「元素实际合成亮度」找残留）：
+
+```bash
+node tools/ui-theme-audit.js --themes=dark,light --shot   # 有亮色残留则退出码 1
+node tools/ui-theme-audit.js --palette                    # 打印两套主题的色板快照
+node tools/ui-theme-audit.js --pages=settings --layout     # 量卡片底部留白、栅格空洞
+```
+
+`--layout` 是给「页面留白太多」这类问题用的：它会报出每张卡片内部底部空了多少像素。
+**栅格容器务必带 `items-start`** —— 不加的话同排的矮卡会被拉伸到最高卡的高度，
+内部留下一大片空白（系统设置页曾因此空出 576px）。
 
 
 ### 打包成 exe（怎么重新生成安装包）

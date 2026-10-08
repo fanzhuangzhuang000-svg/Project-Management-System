@@ -185,7 +185,7 @@ export function RecordForm({
           {attachments.length > 0 && (
             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
               {attachments.map(a => (
-                <div key={a.id} className="flex items-center gap-2 rounded-tile bg-white px-2.5 py-2">
+                <div key={a.id} className="flex items-center gap-2 rounded-tile bg-surface px-2.5 py-2">
                   <span className="flex h-8 w-8 flex-none items-center justify-center rounded-[10px] bg-slate-100 text-ink-400">
                     <FileText size={15} />
                   </span>

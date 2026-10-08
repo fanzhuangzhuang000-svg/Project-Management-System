@@ -35,7 +35,7 @@ export function Modal({
       onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className={cn('my-auto w-full animate-float-in rounded-card bg-white shadow-pop', W, className)}
+        className={cn('my-auto w-full animate-float-in rounded-card bg-surface shadow-pop', W, className)}
         onMouseDown={e => e.stopPropagation()}
       >
         {title !== undefined && (

@@ -220,7 +220,7 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
     <div className="pointer-events-none fixed inset-0 z-[500]">
       {open && (
         <div
-          className="pointer-events-auto absolute bottom-6 right-6 flex flex-col overflow-hidden rounded-card bg-white shadow-pop"
+          className="pointer-events-auto absolute bottom-6 right-6 flex flex-col overflow-hidden rounded-card bg-surface shadow-pop"
           style={{ width: size.w, height: size.h }}
         >
           {/* 缩放手柄：面板钉在右下角，所以手柄放左上角，
@@ -335,7 +335,7 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
           </div>
 
           {/* 输入区 */}
-          <div className="flex-none border-t border-slate-100 bg-white p-3">
+          <div className="flex-none border-t border-slate-100 bg-surface p-3">
             {!ready && cfg && (
               <div className="mb-2 flex items-center gap-2 rounded-tile bg-amber-50 px-3 py-2">
                 <CircleAlert size={13} className="flex-none text-orange-500" />
@@ -399,7 +399,7 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
           <Bot size={26} />
           {/* 有待办时挂一个小红点（不加数字，保持圆球干净） */}
           {reminders.length > 0 && (
-            <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-down ring-2 ring-white" />
+            <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-down ring-2 ring-surface" />
           )}
         </button>
       )}
@@ -420,7 +420,7 @@ function ProposalCard ({ prop, onDecide }: { prop: AiProposal; onDecide: (ok: bo
       st === 'applied' ? 'border-green-200 bg-green-50'
         : st === 'cancelled' ? 'border-slate-200 bg-slate-50'
           : st === 'error' ? 'border-red-200 bg-red-50'
-            : 'border-brand/30 bg-white shadow-soft')}>
+            : 'border-brand/30 bg-surface shadow-soft')}>
       <div className="flex items-center gap-2">
         <span className={cn('flex h-6 w-6 flex-none items-center justify-center rounded-full text-white',
           st === 'applied' ? 'bg-up' : st === 'cancelled' ? 'bg-slate-400' : st === 'error' ? 'bg-down' : 'grad-ai')}>
@@ -489,7 +489,7 @@ function Welcome ({ ready, canEdit, quick, tips, onAsk, onGo, onConfig }: {
         </div>
         {quick.map((q, i) => (
           <button key={i} onClick={() => onAsk(q.text)}
-            className="block w-full rounded-tile bg-white px-3.5 py-3 text-left shadow-soft transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card-hover">
+            className="block w-full rounded-tile bg-surface px-3.5 py-3 text-left shadow-soft transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card-hover">
             <div className="flex items-start gap-2.5">
               <Sparkles size={15} className="mt-0.5 flex-none text-brand" />
               <span className="text-body leading-relaxed text-ink-700">{q.text}</span>
@@ -503,7 +503,7 @@ function Welcome ({ ready, canEdit, quick, tips, onAsk, onGo, onConfig }: {
   // 未配置：退回本地分析，并提示去配置
   return (
     <div className="space-y-2.5">
-      <div className="rounded-tile bg-white px-3.5 py-3 shadow-soft">
+      <div className="rounded-tile bg-surface px-3.5 py-3 shadow-soft">
         <div className="flex items-start gap-2.5">
           <Sparkles size={15} className="mt-0.5 flex-none text-brand" />
           <div>
@@ -526,7 +526,7 @@ function Welcome ({ ready, canEdit, quick, tips, onAsk, onGo, onConfig }: {
           className={cn(
             'block w-full rounded-tile px-3.5 py-3 text-left transition-all duration-200',
             tip.to ? 'hover:-translate-y-0.5 hover:shadow-soft' : 'cursor-default',
-            tip.tone === 'danger' ? 'bg-red-50' : tip.tone === 'warn' ? 'bg-amber-50' : 'bg-white shadow-soft',
+            tip.tone === 'danger' ? 'bg-red-50' : tip.tone === 'warn' ? 'bg-amber-50' : 'bg-surface shadow-soft',
           )}>
           <div className="flex items-start gap-2.5">
             <Sparkles size={15}
@@ -591,7 +591,7 @@ function Bubble ({ role, content, streaming, question }: {
       <span className="grad-ai mt-1 flex h-6 w-6 flex-none items-center justify-center rounded-full text-white">
         <Bot size={13} />
       </span>
-      <div className="min-w-0 max-w-[88%] rounded-card rounded-tl-tile bg-white px-4 py-3 shadow-soft">
+      <div className="min-w-0 max-w-[88%] rounded-card rounded-tl-tile bg-surface px-4 py-3 shadow-soft">
         {content
           ? <Markdown text={content} />
           : <span className="flex items-center gap-1.5 text-tiny text-ink-300"><Loader2 size={12} className="animate-spin" />正在生成…</span>}
