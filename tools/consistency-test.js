@@ -424,7 +424,7 @@ check('回收站统计带 bytes（占用空间不会算出 NaN）',
 // 自己写的好处是确定的：同一份代码在哪台机器上都产出同样的包，执行位也能精确控制。
 // 坏处是"格式写错了也没人管" —— 所以这里拿系统 tar 把包读回来验一遍。
 {
-  const { writeTarGz } = require('./tar-write.js');
+  const { writeTarGz, readTarGz } = require('./tar-write.js');
   const { spawnSync } = require('node:child_process');
   const work = path.join(TMP, 'tarwork');
   const entry = 'pkg-1.0';
@@ -438,21 +438,26 @@ check('回收站统计带 bytes（占用空间不会算出 NaN）',
   try { made = writeTarGz(work, entry, out) } catch (e) { err = e.message }
   check('内置 tar 能写出包', !!made && fs.existsSync(out), err || (made ? `${made.files} 个文件` : ''));
 
-  // 用系统 tar 读回：cwd + 相对文件名，避免 Windows 上 tar 把 C: 当远程主机
-  const list = spawnSync('tar', ['-tzf', 'pkg.tar.gz'], { cwd: work, encoding: 'utf8', windowsHide: true });
-  if (list.error || list.status !== 0) {
-    skipCheck('内置 tar 的包能被系统 tar 读出', '本机没有可用的 tar（' + ((list.error && list.error.message) || list.stderr || '').slice(0, 60) + '）');
-  } else {
-    const names = list.stdout.split('\n').filter(Boolean);
-    check('内置 tar 的包能被系统 tar 读出', names.length > 0, names.length + ' 个条目');
-    check('中文文件名没被写坏', names.some(n => n.includes('怎么运行.txt')),
-      names.filter(n => /txt$/.test(n)).join(', '));
-    const tv = spawnSync('tar', ['-tvzf', 'pkg.tar.gz'], { cwd: work, encoding: 'utf8', windowsHide: true });
-    const shLine = (tv.stdout || '').split('\n').find(l => l.includes('deploy.sh')) || '';
-    check('deploy.sh 带执行位（客户能 ./deploy.sh 直接跑）', /^-rwxr-xr-x/.test(shLine.trim()), shLine.trim());
-    const jsLine = (tv.stdout || '').split('\n').find(l => l.endsWith('server.js')) || '';
-    check('普通文件不带执行位', /^-rw-r--r--/.test(jsLine.trim()), jsLine.trim());
-  }
+  // ⚠️ 判据走 readTarGz，不走 `tar -tvzf` 的输出。
+  //    tar 的输出要过 Windows 控制台代码页：中文名会乱码、行尾还会多一个 \r，
+  //    于是 endsWith('server.js') 不成立、includes('怎么运行.txt') 也不成立 ——
+  //    本机 Git Bash 绿、CI 红。这不是包的问题，是验证方法的问题。
+  const ents = readTarGz(out);
+  const byName = n => ents.find(e => e.name === `${entry}/${n}`);
+  check('包里的条目齐全（目录 + 3 个文件）', ents.length === 5, ents.map(e => e.name).join(' | '));
+  check('中文文件名按 UTF-8 写对了', !!byName('怎么运行.txt'),
+    ents.filter(e => /\.txt$/.test(e.name)).map(e => e.name).join(', '));
+  const sh = byName('deploy/deploy.sh');
+  check('deploy.sh 是 755（客户能 ./deploy.sh 直接跑）',
+    !!sh && (sh.mode & 0o777) === 0o755, sh ? '0' + (sh.mode & 0o777).toString(8) : '没找到');
+  const js = byName('server.js');
+  check('普通文件是 644（不带执行位）',
+    !!js && (js.mode & 0o777) === 0o644, js ? '0' + (js.mode & 0o777).toString(8) : '没找到');
+
+  // 外部 tar 能不能读（只看退出码，不看输出内容 —— 输出受代码页影响）
+  const ext = spawnSync('tar', ['-tzf', 'pkg.tar.gz'], { cwd: work, encoding: 'utf8', windowsHide: true });
+  if (ext.error) skipCheck('系统 tar 也能读这个包', '本机没有可用的 tar');
+  else check('系统 tar 也能读这个包', ext.status === 0, (ext.stderr || '').slice(0, 80));
 }
 
 // ================================================================

@@ -144,4 +144,40 @@ function writeTarGz (cwd, entry, out) {
   return { files, bytes: gz.length };
 }
 
-module.exports = { writeTarGz };
+module.exports = { writeTarGz, readTarGz };
+
+/**
+ * 读回一个 .tar.gz，返回 [{ name, mode, size, type }]。
+ *
+ * 为什么要有这个：验证打包结果时，一开始是 `tar -tvzf` 看输出 —— 在 Windows 上
+ * 这条路不可靠：tar 的**输出**要经过控制台代码页，中文文件名会变成乱码或问号，
+ * 行尾还会多一个 \r（split('\n') 之后 endsWith('server.js') 直接不成立）。
+ * 本机 Git Bash 下一切正常，CI 的 runner 就红了两条 —— 但那是"验证方法"的问题，
+ * 不是包的问题。自己解 uStar 头是确定的，也不受本地有没有 tar 影响。
+ */
+function readTarGz (file) {
+  const buf = zlib.gunzipSync(fs.readFileSync(file));
+  const out = [];
+  let off = 0;
+  while (off + BLOCK <= buf.length) {
+    const h = buf.subarray(off, off + BLOCK);
+    // 全零块 = 归档结束
+    let allZero = true;
+    for (const b of h) if (b !== 0) { allZero = false; break }
+    if (allZero) break;
+    const str = (from, len) => {
+      let e = from;
+      const end = from + len;
+      while (e < end && h[e] !== 0) e++;
+      return h.subarray(from, e).toString('utf8');
+    };
+    const name = str(0, 100);
+    const prefix = str(345, 155);
+    const mode = parseInt(str(100, 8), 8) || 0;
+    const size = parseInt(str(124, 12), 8) || 0;
+    const type = h[156] === 0 ? '0' : String.fromCharCode(h[156]);
+    out.push({ name: prefix ? prefix + '/' + name : name, mode, size, type });
+    off += BLOCK + Math.ceil(size / BLOCK) * BLOCK;
+  }
+  return out;
+}
