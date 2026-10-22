@@ -184,6 +184,25 @@ function countProjects (file) {
       // /api/get/<table>/<id> 直接返回行对象本身，不是 {row}
       check('被删的那个项目确实回来了（按 id 查得到）', !!(again && again.id), JSON.stringify(again).slice(0, 120));
     }
+    // ── 6. 坏备份不能把好数据换掉 ──
+    // 拷贝中途断了 / 网盘没同步完 / 杀毒软件截断，都会产出这种文件。
+    console.log('\n [6] 拿一份损坏的备份去还原：必须中止，且一个字节都不动');
+    {
+      // 必须先停服务：服务开着时任何还原都会被占用探测挡住，
+      // 那就测不到备份本身是坏的这一层了。
+      await stopServer(srv, port); srv = null;
+      const bkDir = path.dirname(bkFile);
+      const broken = path.join(bkDir, 'pms_29991231_235959.db');
+      const whole = fs.readFileSync(bkFile);
+      fs.writeFileSync(broken, whole.subarray(0, Math.min(4096, whole.length)));
+
+      const before = countProjects(dbFile);
+      const r = await runTool(['tools/restore-backup.js', 'pms_29991231_235959.db'], dataDir);
+      check('损坏的备份被拒绝（退出码非 0）', r.code !== 0, '退出码 ' + r.code);
+      check('拒绝时说明了"当前数据没动"', /一个字节都没动|已中止/.test(r.out), r.out.slice(-160).replace(/\s+/g, ' '));
+      check('拒绝之后项目数没变（好数据还在）', countProjects(dbFile) === before, `${before} → ${countProjects(dbFile)}`);
+      try { fs.unlinkSync(broken) } catch { /* 忽略 */ }
+    }
   } catch (e) {
     check('测试过程未抛异常', false, e.message);
   } finally {

@@ -101,6 +101,47 @@ function dbBusyState (file) {
   return out || ('err:' + String(r.stderr || '探测失败').trim().slice(0, 160));
 }
 
+/**
+ * 验一份 SQLite 备份是否可用（在**副本**上验，绝不碰原文件）。
+ * @returns {{ok:boolean, error?:string, summary?:string}}
+ */
+function checkSqliteBackup (file) {
+  // 在副本上开库：直接开原文件会让 SQLite 顺手建 -wal/-shm，
+  // 万一这份备份是要长期留存的，不该被我们改动。
+  const tmp = path.join(require('node:os').tmpdir(), 'pms-verify-' + process.pid + '-' + Date.now() + '.db');
+  try {
+    fs.copyFileSync(file, tmp);
+  } catch (e) {
+    return { ok: false, error: '备份文件读不出来：' + e.message };
+  }
+  const script = `
+    const { DatabaseSync } = require('node:sqlite');
+    const f = process.argv[1];
+    try {
+      const d = new DatabaseSync(f);
+      const integrity = d.prepare('PRAGMA integrity_check').get();
+      const v = Object.values(integrity || {})[0];
+      const names = d.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
+      d.close();
+      if (v !== 'ok') { console.log(JSON.stringify({ ok: false, error: '数据库完整性检查没通过：' + v })); process.exit(0); }
+      const missing = ['projects', 'users'].filter(t => !names.includes(t));
+      if (missing.length) { console.log(JSON.stringify({ ok: false, error: '这不是本系统的备份（缺少表：' + missing.join('、') + '）' })); process.exit(0); }
+      console.log(JSON.stringify({ ok: true, tables: names.length }));
+    } catch (e) {
+      console.log(JSON.stringify({ ok: false, error: '打开失败：' + String(e.message).slice(0, 160) }));
+    }
+  `;
+  const r = spawnSync(process.execPath, ['--no-warnings', '-e', script, tmp],
+    { encoding: 'utf8', timeout: 60000, windowsHide: true });
+  try { fs.unlinkSync(tmp) } catch { /* 忽略 */ }
+  const out = String(r.stdout || '').trim();
+  let parsed;
+  try { parsed = JSON.parse(out.split('\n').pop()) } catch { parsed = null }
+  if (!parsed) return { ok: false, error: '备份检查程序没给出结果（' + String(r.stderr || '未知').trim().slice(0, 120) + '）' };
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  return { ok: true, summary: `结构完整，共 ${parsed.tables} 张表` };
+}
+
 if (!list.length) die('备份目录里一份备份都没有：' + bk.BACKUP_DIR);
 
 const chosen = arg
@@ -166,6 +207,29 @@ if (kind === 'sqlite') {
   if (dbf.dialect !== 'sqlite') {
     die('这是 SQLite 备份，但当前系统连的是 PostgreSQL。请在 SQLite 版本上还原。');
   }
+  /**
+   * 先验这份备份到底能不能用 —— **验完再动现有的库**。
+   *
+   * 以前这里直接「删掉现有的库 → 把备份拷过去」。要是备份本身是坏的
+   * （U 盘掉线导致拷了一半、网盘同步中途退出、杀毒软件把文件截断），
+   * 结果就是：好好的库被换成一份打不开的文件，用户第二天开机看到"数据全没了"。
+   * 虽然前面另存了一份 _before-restore，但那是要用户自己去 backup 目录里
+   * 认出文件名、改成 pms.db、再放回 data 目录 —— 绝大多数人做不到。
+   *
+   * 所以：完整性检查 + 关键表存在 + 能读出项目数，任何一条不过就停下，
+   * 而且**一个字节都不动**。
+   */
+  const chk = checkSqliteBackup(src);
+  if (!chk.ok && !force) {
+    die('这份备份用不了，已中止（当前数据一个字节都没动）：\n    ' + chk.error + '\n\n'
+      + '  文件：' + src + '\n'
+      + '  常见原因：拷贝过程中断了、网盘同步没同步完、文件被截断。\n'
+      + '  换一份更早的备份试试（不加参数默认用最新一份，也可以指定文件名）：\n'
+      + '    node tools/restore-backup.js pms_20261007_031700.db\n'
+      + '  确实要强行覆盖（不建议）：加 --force');
+  }
+  if (!chk.ok) console.log('  ⚠ 备份完整性检查没通过（--force 强行继续）：' + chk.error);
+  else console.log('  备份检查通过：' + chk.summary);
   // 动手之前先确认没人占着这个库（详见 dbBusyState 的注释）
   const busy = dbBusyState(dbf.DB_FILE);
   if (busy.startsWith('busy') && !force) {
