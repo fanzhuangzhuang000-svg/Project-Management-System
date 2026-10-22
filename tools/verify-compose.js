@@ -241,8 +241,22 @@ for (const f of ['start.bat', 'stop.bat', 'tools/install-docker.bat']) {
 // ── 5. app 端是否真的支持这些环境变量 ──
 console.log('\n[5] 程序端真的认这些变量吗');
 const serverJs = read('server.js');
+// ⚠️ 下面这两条只查"变量名出现过"，曾经在真故障期间一直是绿的：
+//    代码里确实写了 PMS_ADMIN_PASSWORD，但那段写在建表之前，
+//    全新库上 auth.getUserByName('admin') 抛 no such table: users，
+//    整块被吞掉 —— 变量名在、功能全废。所以这里补一条**顺序**断言。
+//    真正能证明它生效的是 tools/startup-env-test.js（起全新实例真登一次）。
 check('★ server.js 认 PMS_COMPANY_NAME', serverJs.includes('PMS_COMPANY_NAME'));
 check('★ server.js 认 PMS_ADMIN_PASSWORD', serverJs.includes('PMS_ADMIN_PASSWORD'));
+{
+  const iTable = Math.max(serverJs.indexOf('auth.createTable();'), serverJs.indexOf('auth.ensureAdmin();'));
+  const iPw = serverJs.indexOf('PMS_ADMIN_PASSWORD');
+  check('★ .env 初始化跑在建表 / 建管理员之后（写在前面的那次事故：no such table: users）',
+    iTable > 0 && iPw > iTable, iPw < iTable ? '.env 初始化又在建表之前了' : '');
+  // 三件事共用一个大 try 时，管理员密码一抛错会把公司名和 AI 配置一起跳过
+  check('★ .env 三件事各自 try（一项失败不连累其它）',
+    /公司名写入失败/.test(serverJs) && /管理员初始密码设置失败/.test(serverJs) && /AI 助手配置写入失败/.test(serverJs));
+}
 check('★ db-driver.js 认 DB_URL', read('db-driver.js').includes('DB_URL'));
 check('★ storage.js 认 STORAGE_DRIVER', read('storage.js').includes('STORAGE_DRIVER'));
 check('★ 升级机制会在启动时跑迁移', serverJs.includes('migrations.js') || read('db.js').includes('migrations.js'));

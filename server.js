@@ -115,22 +115,74 @@ function sendJSON (res, code, obj) {
   res.end(body);
 }
 
+/**
+ * 请求体读取失败时的统一应答。
+ * 超上限必须是 413（前端据此提示"文件太大"），其它（JSON 坏、网络断）是 400。
+ * 以前每个调用点都写死 400，于是"文件太大"也被报成"JSON 格式错误"。
+ */
+const bodyFail = (res, e) => sendJSON(res, e && e.code === 'TOOBIG' ? 413 : 400, { error: (e && e.message) || '请求格式错误' });
+
 function readBody (req, limit = 4 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let tooBig = false;
     req.on('data', c => {
+      if (tooBig) return;                      // 已经在拒绝，剩下的数据丢弃
       size += c.length;
-      if (size > limit) { reject(new Error('请求体过大')); req.destroy(); return; }
+      if (size > limit) {
+        tooBig = true;
+        chunks.length = 0;                     // 别把几十 MB 攥在内存里
+        /**
+         * ⚠️ 这里**绝对不能** req.destroy()（以前就是这么写的）。
+         *    socket 一断，调用方的 `sendJSON(res, 413)` 就写不出去，
+         *    用户看到的不是"文件太大"，而是浏览器/界面报"网络错误、请重试"，
+         *    然后一遍遍重试同一个大文件 —— 永远失败且没有任何线索。
+         *    实测：6 MB 的请求体在 fetch 侧直接 `fetch failed`（ECONNRESET）。
+         *    正确做法：立刻 reject 让处理函数先把 413 写回去，再用 resume()
+         *    把剩余数据读完丢掉，socket 才不会因为"请求没读完就回包"被重置。
+         */
+        reject(Object.assign(new Error(`请求体过大（上限 ${Math.round(limit / 1024 / 1024)} MB）`), { code: 'TOOBIG' }));
+        req.resume();
+        return;
+      }
       chunks.push(c);
     });
     req.on('end', () => {
+      if (tooBig) return;
       const raw = Buffer.concat(chunks).toString('utf8');
       if (!raw) return resolve({});
-      try { resolve(JSON.parse(raw)); } catch { reject(new Error('JSON 格式错误')); }
+      let v;
+      try { v = JSON.parse(raw); } catch { return reject(new Error('JSON 格式错误')); }
+      /**
+       * `null` / `"abc"` / `123` 都是**合法 JSON**，但不是"请求体"。
+       * 以前直接把它们 resolve 出去，下游一句 `body.table` 就抛
+       * `Cannot read properties of null` → HTTP 500 + 英文原文弹给用户。
+       * 实测 9 个接口（save/batch-delete/ai.apply/ai.ingest/settings/
+       * users.unlock/logs.purge/snapshots.capture/contract.plan）都这样。
+       * 统一收成 {}：下游的"缺少 xxx"校验照样会给出 400 和中文提示。
+       */
+      if (v === null || typeof v !== 'object') return resolve({});
+      resolve(v);
     });
     req.on('error', reject);
   });
+}
+
+/**
+ * 读一个小的 JSON 请求体（AI 相关接口，体积上限各不相同：64 / 256 / 512 KB）。
+ *
+ * 和 readBody 的唯一区别是**把「不是对象」的 JSON 收成 {}**：
+ *   JSON.parse('null') 是合法的，返回 null，下游一句 body.token 就抛
+ *   TypeError → HTTP 500，界面弹出一句英文「Cannot read properties of null」。
+ *   实测 /api/ai/apply 和 /api/ai/ingest 都这样。
+ *   空 body 本来就该走「缺少 xxx」的 400，不该是 500。
+ */
+async function readJson (req, limit) {
+  const raw = (await readRaw(req, limit)).toString('utf8');
+  if (!raw) return {};
+  const v = JSON.parse(raw);
+  return (v && typeof v === 'object') ? v : {};
 }
 
 function csvCell (v) {
@@ -166,16 +218,21 @@ function readRaw (req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let tooBig = false;
     req.on('data', c => {
+      if (tooBig) return;
       size += c.length;
       if (size > limit) {
+        tooBig = true;
+        chunks.length = 0;
+        // 同上：不能 destroy()，否则 413 写不回去，用户只看到"上传失败"。
         reject(Object.assign(new Error(`文件超过 ${Math.round(limit / 1024 / 1024)} MB 上限`), { code: 'TOOBIG' }));
-        req.destroy();
+        req.resume();
         return;
       }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('end', () => { if (!tooBig) resolve(Buffer.concat(chunks)); });
     req.on('error', reject);
   });
 }
@@ -615,7 +672,7 @@ async function handleApi (req, res, url) {
   // ---------------- 登录 / 会话 ----------------
   if (head === 'login' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return bodyFail(res, e); }
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
     if (!username || !password) return sendJSON(res, 400, { error: '请输入账号和密码' });
@@ -684,7 +741,7 @@ async function handleApi (req, res, url) {
     if (method === 'POST') {
       if (!guardSys(req, res, 'settings', '系统设置')) return;
       let body;
-      try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+      try { body = await readBody(req); } catch (e) { return bodyFail(res, e); }
       const patch = body.settings || body;
       const r = dbf.saveSettings(patch);
       if (r.error) return sendJSON(res, 400, r);
@@ -697,7 +754,7 @@ async function handleApi (req, res, url) {
 
   if (head === 'me' && a === 'password' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return bodyFail(res, e); }
     const r = auth.changeOwnPassword(req.user, body.old, body.new);
     if (r.error) return sendJSON(res, 400, r);
     writeLog(req, 'update', null, req.user.id, req.user.name || req.user.username, '修改密码');
@@ -744,7 +801,7 @@ async function handleApi (req, res, url) {
     }
     if (method === 'POST') {
       let body;
-      try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+      try { body = await readBody(req); } catch (e) { return bodyFail(res, e); }
       // 授权的账号数上限：只拦「新建」，改已有账号（改名/改权限/停用）一律放行。
       // 达上限就停手 —— 不能因为额度用完把客户锁在门外。
       if (!body.id && licenseNow().seatsExceeded) {
@@ -930,7 +987,7 @@ async function handleApi (req, res, url) {
     if (a === 'config' && method === 'POST') {
       if (!guardSys(req, res, 'settings', '系统设置')) return;
       let body;
-      try { body = JSON.parse((await readRaw(req, 64 * 1024)).toString('utf8') || '{}'); }
+      try { body = await readJson(req, 64 * 1024); }
       catch { return sendJSON(res, 400, { error: '请求格式不对' }); }
       try {
         const saved = ai.saveConfig(body, req.user.perms);
@@ -947,7 +1004,7 @@ async function handleApi (req, res, url) {
     if (a === 'test' && method === 'POST') {
       if (!guardSys(req, res, 'settings', '系统设置')) return;
       let body;
-      try { body = JSON.parse((await readRaw(req, 64 * 1024)).toString('utf8') || '{}'); }
+      try { body = await readJson(req, 64 * 1024); }
       catch { body = {}; }
       const override = {};
       for (const k of ['provider', 'baseUrl', 'model', 'apiKey']) {
@@ -974,7 +1031,7 @@ async function handleApi (req, res, url) {
     if (a === 'chat' && method === 'POST') {
       if (!anyRead(req.user.perms)) return deny(res, '没有查看任何模块的权限');
       let body;
-      try { body = JSON.parse((await readRaw(req, 256 * 1024)).toString('utf8') || '{}'); }
+      try { body = await readJson(req, 256 * 1024); }
       catch { return sendJSON(res, 400, { error: '请求格式不对' }); }
 
       const cfg = ai.publicConfig(req.user.perms);
@@ -1027,7 +1084,7 @@ async function handleApi (req, res, url) {
     if (a === 'apply' && method === 'POST') {
       if (!anyRead(req.user.perms)) return deny(res, '没有查看任何模块的权限');
       let body;
-      try { body = JSON.parse((await readRaw(req, 64 * 1024)).toString('utf8') || '{}'); }
+      try { body = await readJson(req, 64 * 1024); }
       catch { return sendJSON(res, 400, { error: '请求格式不对' }); }
       const token = String(body.token || '');
       if (!token) return sendJSON(res, 400, { error: '缺少方案凭证' });
@@ -1047,7 +1104,7 @@ async function handleApi (req, res, url) {
     if (a === 'ingest' && method === 'POST') {
       if (!anyRead(req.user.perms)) return deny(res, '没有查看任何模块的权限');
       let body;
-      try { body = JSON.parse((await readRaw(req, 64 * 1024)).toString('utf8') || '{}'); }
+      try { body = await readJson(req, 64 * 1024); }
       catch { return sendJSON(res, 400, { error: '请求格式不对' }); }
 
       const attId = parseInt(body.attachment_id, 10);
@@ -1198,7 +1255,7 @@ async function handleApi (req, res, url) {
     if (a === 'export' && method === 'POST') {
       if (!anyRead(req.user.perms)) return deny(res, '没有查看任何模块的权限');
       let body;
-      try { body = JSON.parse((await readRaw(req, 512 * 1024)).toString('utf8') || '{}'); }
+      try { body = await readJson(req, 512 * 1024); }
       catch { return sendJSON(res, 400, { error: '请求格式不对' }); }
       const answer = String(body.answer || '').trim();
       if (!answer) return sendJSON(res, 400, { error: '没有可导出的内容' });
@@ -1263,7 +1320,7 @@ async function handleApi (req, res, url) {
       if (method === 'POST') {
         if (!guardSys(req, res, 'settings', '系统设置')) return;
         let body;
-        try { body = JSON.parse((await readRaw(req, 64 * 1024)).toString('utf8') || '{}'); }
+        try { body = await readJson(req, 64 * 1024); }
         catch { return sendJSON(res, 400, { error: '请求格式不对' }); }
         try {
           const saved = ai.savePushConfig(body, req.user.perms);
@@ -1578,7 +1635,7 @@ async function handleApi (req, res, url) {
   // 批量删除（列表页勾选后使用）
   if (head === 'batch-delete' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return bodyFail(res, e); }
     const table = body.table;
     if (!guardTable(req, res, table, 'write')) return;
     if (!TABLES[table]) return sendJSON(res, 404, { error: '未知数据表' });
@@ -1668,7 +1725,7 @@ async function handleApi (req, res, url) {
     if (!guardTable(req, res, a, 'write')) return;
     if (!TABLES[a]) return sendJSON(res, 404, { error: '未知数据表' });
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return bodyFail(res, e); }
     // 表单里上传的暂存附件：保存后自动挂到这条记录上
     const attachToken = body.__attach_token || null;
     delete body.__attach_token;
@@ -1977,43 +2034,6 @@ const server = http.createServer((req, res) => {
 
 const seedResult = dbf.init();
 
-  // 网络版：.env 里配了公司名 / 初始密码就写进去，客户打开即看到自己的名字。
-  // 只在**库是新建的**时候写，不覆盖客户后来在界面上改过的值。
-  try {
-    if (!seedResult.existed) {
-      const patch = {};
-      if (process.env.PMS_COMPANY_NAME) {
-        patch.company_name = process.env.PMS_COMPANY_NAME;
-        patch.system_name = process.env.PMS_COMPANY_NAME + '工程项目管理系统';
-      }
-      if (Object.keys(patch).length) dbf.saveSettings(patch);
-      if (process.env.PMS_ADMIN_PASSWORD) {
-        const u = auth.getUserByName('admin');
-        if (u) auth.resetPassword(u.id, process.env.PMS_ADMIN_PASSWORD, false);
-      }
-
-      // AI 助手的默认配置也从 .env 读。
-      //
-      // 注意 AI 的配置**不在 settings 表里**，而是存在 data/ai-config.json
-      // （ai.js 自己管的），所以这里走 saveConfig 而不是 saveSettings。
-      //
-      // 需求里点名要「是否开启AI助手默认配置」这一项，之前完全没接，
-      // 客户装完得自己进界面开。现在 .env 里写一行就行。
-      if (process.env.PMS_AI_ENABLED !== undefined || process.env.PMS_AI_API_KEY) {
-        const aiPatch = {};
-        if (process.env.PMS_AI_ENABLED !== undefined) {
-          aiPatch.enabled = String(process.env.PMS_AI_ENABLED).toLowerCase() !== 'false'
-            && String(process.env.PMS_AI_ENABLED) !== '0';
-        }
-        if (process.env.PMS_AI_PROVIDER) aiPatch.provider = process.env.PMS_AI_PROVIDER;
-        if (process.env.PMS_AI_API_KEY) aiPatch.apiKey = process.env.PMS_AI_API_KEY;
-        if (process.env.PMS_AI_MODEL) aiPatch.model = process.env.PMS_AI_MODEL;
-        ai.saveConfig(aiPatch, null);
-        console.log('  [初始配置] 已按 .env 设置 AI 助手'
-          + (aiPatch.enabled === undefined ? '' : (aiPatch.enabled ? '（开启）' : '（关闭）')));
-      }
-    }
-  } catch (e) { console.log('  [初始配置] 写入失败：' + e.message); }
 attach.ensureDir();
 attach.createTable();
 trash.createTable();
@@ -2027,6 +2047,77 @@ const tenantColsAdded = require("./tenant.js").ensureColumns();
 if (tenantColsAdded.length) console.log("  [多租户] 已补 tenant_id 列：" + tenantColsAdded.join(", "));
 // 首次启动自动创建管理员账号
 const adminInit = auth.ensureAdmin();
+
+/**
+ * 按 .env 做首次初始化（公司名 / 管理员初始密码 / AI 助手默认配置）。
+ *
+ * ⚠️ 这段以前写在 dbf.init() 之后、建表之前 —— 结果**全新库上整块都没生效**：
+ *    auth.getUserByName('admin') 抛 `no such table: users`，被外层一个大 try 吞掉，
+ *    日志只有一句「[初始配置] 写入失败：no such table: users」，没人看得懂。
+ *    后果不是"没配置成功"这么轻：
+ *      · docker-compose / deploy.sh 里 ADMIN_PASSWORD / PMS_ADMIN_PASSWORD 全写着，
+ *        运维设了强口令，实际管理员口令还是代码里写死的 admin123；
+ *      · 三件事共用同一个 try，管理员密码一抛错，**公司名和 AI 配置也一起跳过**。
+ *    所以：① 挪到建表 + ensureAdmin 之后；② 三件事各自 try，谁失败不连累别人；
+ *          ③ 失败必须说清是哪一项、什么原因，而不是一句"写入失败"。
+ *
+ * 只在**库是新建的**时候写：客户后来在界面上改过的密码/名称绝不能被 .env 覆盖掉
+ * （否则每次重启都会把密码改回去，用户会以为是"密码自己变了"）。
+ */
+const envApplied = { adminPassword: false, companyName: false, ai: false };
+if (!seedResult.existed) {
+  if (process.env.PMS_COMPANY_NAME) {
+    try {
+      dbf.saveSettings({
+        company_name: process.env.PMS_COMPANY_NAME,
+        system_name: process.env.PMS_COMPANY_NAME + '工程项目管理系统',
+      });
+      envApplied.companyName = true;
+      console.log('  [初始配置] 公司名已按 .env 设为：' + process.env.PMS_COMPANY_NAME);
+    } catch (e) { console.log('  [初始配置] 公司名写入失败：' + e.message); }
+  }
+
+  if (process.env.PMS_ADMIN_PASSWORD) {
+    try {
+      const u = auth.getUserByName('admin');
+      if (!u) {
+        console.log('  [初始配置] 找不到 admin 账号，PMS_ADMIN_PASSWORD 未生效（请用 admin123 登录后手动修改）');
+      } else {
+        // 第三参数 false = 不强制下次登录改密码：密码是运维自己定的，没必要再拦一道
+        const r = auth.resetPassword(u.id, process.env.PMS_ADMIN_PASSWORD, false);
+        if (r && r.error) {
+          console.log('  [初始配置] 管理员初始密码设置失败：' + r.error
+            + '（当前仍为默认口令 admin123，请尽快登录后修改）');
+        } else {
+          envApplied.adminPassword = true;
+          console.log('  [初始配置] 管理员密码已按 .env 设置（不再是默认的 admin123）');
+        }
+      }
+    } catch (e) { console.log('  [初始配置] 管理员初始密码设置失败：' + e.message); }
+  }
+
+  // AI 助手的默认配置也从 .env 读。
+  //
+  // 注意 AI 的配置**不在 settings 表里**，而是存在 data/ai-config.json
+  // （ai.js 自己管的），所以这里走 saveConfig 而不是 saveSettings。
+  if (process.env.PMS_AI_ENABLED !== undefined || process.env.PMS_AI_API_KEY) {
+    try {
+      const aiPatch = {};
+      if (process.env.PMS_AI_ENABLED !== undefined) {
+        aiPatch.enabled = String(process.env.PMS_AI_ENABLED).toLowerCase() !== 'false'
+          && String(process.env.PMS_AI_ENABLED) !== '0';
+      }
+      if (process.env.PMS_AI_PROVIDER) aiPatch.provider = process.env.PMS_AI_PROVIDER;
+      if (process.env.PMS_AI_API_KEY) aiPatch.apiKey = process.env.PMS_AI_API_KEY;
+      if (process.env.PMS_AI_MODEL) aiPatch.model = process.env.PMS_AI_MODEL;
+      ai.saveConfig(aiPatch, null);
+      envApplied.ai = true;
+      console.log('  [初始配置] 已按 .env 设置 AI 助手'
+        + (aiPatch.enabled === undefined ? '' : (aiPatch.enabled ? '（开启）' : '（关闭）')));
+    } catch (e) { console.log('  [初始配置] AI 助手配置写入失败：' + e.message); }
+  }
+}
+
 // 清理过期会话
 const sessionsPurged = auth.purgeExpired();
 
@@ -2071,8 +2162,15 @@ console.log('  写入模式:   ' + (dbf.dialect === 'postgres'
     console.log('  ┌────────────────────────────────────────────────────┐');
     console.log('  │  首次启动，已创建管理员账号：                      │');
     console.log('  │      账号： admin                                  │');
-    console.log('  │      密码： admin123                               │');
-    console.log('  │  登录后会要求你立刻改成自己的密码。                │');
+    // 密码来自 .env 时不能再印 admin123 —— 那会让运维以为默认口令还在，
+    // 反过来也说明「.env 到底生没生效」一眼就能从启动日志看出来。
+    if (envApplied.adminPassword) {
+      console.log('  │      密码： 见 .env 里的 ADMIN_PASSWORD            │');
+      console.log('  │  登录后可在「账号管理」里再改一次。                │');
+    } else {
+      console.log('  │      密码： admin123                               │');
+      console.log('  │  登录后会要求你立刻改成自己的密码。                │');
+    }
     console.log('  └────────────────────────────────────────────────────┘');
     console.log('');
   }

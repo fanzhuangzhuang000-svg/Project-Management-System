@@ -91,6 +91,16 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
 
   // ---------- 0. 服务是否在跑 ----------
   head('0/6  环境检查');
+  // 先给仓库打一份离线快照。全量验证会跑打包、装机、覆盖安装、卸载 ——
+  // 全是"大面积动文件"的操作，而这个目录里的代码是**唯一副本**
+  // （2026-10 已经因此丢过一次仓库根目录）。bundle 放在仓库外面，
+  // 出事了 `git clone xxx.bundle` 就能整份还原。打不出来不阻断，只提示。
+  {
+    const r = runNode(path.join('tools', 'repo-bundle.js'));
+    const line = r.out.split('\n').find(l => /仓库快照|没打成/.test(l)) || '';
+    row('仓库快照', /仓库快照：/.test(line), line.replace(/^\s*[✓⊘]\s*/, '').slice(0, 90));
+  }
+
   let up = false;
   try { const r = await fetch(BASE + '/api/health'); up = r.ok } catch { /* 没起 */ }
   // 自己起的服务最后要关掉（见文件末尾），否则下次跑测试会连上一个数据目录
@@ -207,6 +217,13 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 闰日合同的质保金到期日溢出到 3 月 1 号、发票自动挂账方向反了。
     // 这类问题不报错、不崩溃，单看任何一个页面都挑不出毛病。
     ['口径一致性与原子性', 'consistency-test.js'],
+    // 首次启动的 .env 初始化：只有「全新数据目录 + 全新进程」才压得到，
+    // 所以这套自己起服务（不连共享实例）。起源是实测故障 —— 全新库设了
+    // PMS_ADMIN_PASSWORD，管理员口令却还是公开的 admin123。
+    ['启动初始化', 'startup-env-test.js'],
+    // 接口健壮性：请求体是 JSON 的 null / "abc" / 123、脏 ID、5 MB 请求体。
+    // 以前这些都会 500 并把英文异常原文弹给用户，超限则直接掐连接（fetch failed）。
+    ['接口健壮性', 'robustness-test.js'],
   ];
   head(`3/6  主程序测试（${SUITES.length} 套件）`);
   let suitePass = 0, suiteTotal = 0, skipped = 0;

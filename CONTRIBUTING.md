@@ -155,6 +155,30 @@ PMS_PORT=8792 PMS_DATA_DIR=./data-test PMS_BASE=http://127.0.0.1:8792 \
 
 新增项目级子表时，**两处都要改**。后续会收敛成单一来源，但目前请手动同步。
 
+## 仓库自保（吃过两次亏，别当废话）
+
+这个目录里的代码**就是唯一副本**。已经丢过两次：
+
+1. **打包脚本把仓库根目录整个删了** —— `package.json` / `server.js` / `db.js` / `.git`
+   全没了，只剩一个 `trash.js`。事后逐行核对，所有 `rmSync` 的入参看起来都在
+   `dist-artifacts` 之下，**没能复现出是哪条路径拼成了空串**。现在删除统一走
+   `tools/safe-dir.js`：调用方必须声明"允许删哪个目录之内"，越界直接抛错。
+2. **`git stash push server.js` 半途失败**，`.git` 里 `HEAD`、`config`、`refs/heads`
+   全丢，工作区里除 `server.js` 之外所有已跟踪文件被删，
+   `node_modules` 下每个包的 `package.json` 也一起没了 —— 靠 clone + 替换 `.git`
+   + `npm install` 才救回来。
+
+所以：
+
+- **不要在本仓库用 `git stash`**（尤其带路径的那种）。要临时对比旧版就
+  `git show HEAD:server.js > /tmp/old.js`，要丢弃改动就 `git checkout -- <file>`。
+- 一个改动做完立刻 commit，别攒着。攒着的改动只存在于磁盘上，出事就没了。
+- `node tools/run-all.js` 第 0 步会自动打一份 **git bundle** 到 `../pms-bundles/`
+  （仓库外面，留最近 5 份）。真出事了：`git clone <那个 bundle> pms-restore`，
+  分支和提交历史都在。也可以手动 `node tools/repo-bundle.js`。
+- 删文件之前先想清楚"这条路径是算出来的还是写死的"。算出来的路径里任何一段
+  取到 `undefined`，拼出来就是仓库根。
+
 ## 提交信息
 
 用中文或英文都行，说清楚"改了什么、为什么"：
