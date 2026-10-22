@@ -79,7 +79,12 @@ function ensureMonthly () {
  * 历史趋势：快照按月升序 + 当月实时值，
  * 用于大屏的趋势线（没有快照时只有当月一个点）
  */
-function trend (limit = 12) {
+/**
+ * 近 N 个月的走势。
+ * @param {number} limit 月数
+ * @param {object} [curTotals] 调用方已算好的总览合计；不传则内部自己算一次
+ */
+function trend (limit = 12, curTotals) {
   const rows = db.prepare('SELECT ym, data FROM snapshots ORDER BY ym DESC LIMIT ?')
     .all(Math.max(1, parseInt(limit, 10) || 12)).reverse();
   const pick = (d) => {
@@ -100,7 +105,8 @@ function trend (limit = 12) {
 
   // 当月实时值补在最后（当月还没结账，用实时数）
   const curYm = today().slice(0, 7);
-  const live = pick(dashboard());
+  // 调用方已经算过总览时直接复用，别为了拿 9 个数字把整套 dashboard() 再跑一遍
+  const live = pick(curTotals ? { totals: curTotals } : dashboard());
   const last = out[out.length - 1];
   if (last && last.ym === curYm) out[out.length - 1] = { ym: curYm, snapshot: false, ...live };
   else out.push({ ym: curYm, snapshot: false, ...live });
@@ -108,10 +114,11 @@ function trend (limit = 12) {
 }
 
 /** 环比：本月 vs 上一条快照 */
-function mom () {
+function mom (curTotals) {
   const rows = db.prepare('SELECT ym, data FROM snapshots ORDER BY ym DESC LIMIT 1').all();
-  const cur = dashboard().totals;
+  // 没有快照就没有环比，**先返回**再算总览 —— 否则新装的库每次开首页都白算一遍
   if (!rows.length) return null;
+  const cur = curTotals || dashboard().totals;
   const prev = (safeParse(rows[0].data, {}).totals) || {};
   const diff = (k) => (prev[k] == null || cur[k] == null) ? null : round2(num(cur[k]) - num(prev[k]));
   return {

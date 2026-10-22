@@ -753,8 +753,10 @@ async function handleApi (req, res, url) {
     d.totals.attachment_count = attach.stats().total;
     // 历史趋势（来自月度快照），没权限看钱就不给
     if (anyRead(req.user.perms)) {
-      d.trend = snap.trend(12);
-      d.mom = snap.mom();
+      // 把已经算好的 totals 传进去：trend/mom 内部原本各自再跑一遍 dashboard()，
+      // 一个首页请求等于把 30 多条聚合 SQL 算了 3 遍（实测 1.5 秒）。
+      d.trend = snap.trend(12, d.totals);
+      d.mom = snap.mom(d.totals);
     }
     return sendJSON(res, 200, d);
   }

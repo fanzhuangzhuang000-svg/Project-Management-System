@@ -1341,12 +1341,29 @@ function dashboard () {
     byExpense[k] = round2((byExpense[k] || 0) + num(r.amount));
   }
 
+  // ⚠️ 列表类字段一律截断后再返回。
+  //
+  // 首页只用得到「有多少条、合计多少钱」，明细要看就跳去对应列表页翻。
+  // 但这里原来把 1450 条逾期项目、上千条逾期节点整包塞进响应：
+  // 3000 个项目的库实测响应体 2.5 MB，其中 1.4 MB 是没人用的 overdue 数组。
+  // 局域网也不便宜 —— 浏览器要解析 2.5 MB JSON，首屏明显变慢。
+  // 全量数据仍然参与上面的合计与提醒计算，只是不再往外发。
+  const TOP_N = 20;
   return {
     today: t, this_month: thisMonth,
     month_in: round2(monthIn), month_out: round2(monthOut),
     totals, by_status: byStatus, by_category: byCategory, by_expense: byExpense,
-    monthly, top_receivable: topReceivable, overdue,
-    schedules: { totals: schedTotals, overdue: overdueSchedules, upcoming, month: upcoming[0], due_soon: dueSoon, buckets: { d7: b7, d30: b30 }, warranty_due: warrantyDue },
+    monthly,
+    top_receivable: topReceivable,
+    overdue: overdue.slice(0, TOP_N), overdue_count: overdue.length,
+    schedules: {
+      totals: schedTotals,
+      overdue: overdueSchedules.slice(0, TOP_N), overdue_count: overdueSchedules.length,
+      upcoming, month: upcoming[0],
+      due_soon: dueSoon.slice(0, TOP_N), due_soon_count: dueSoon.length,
+      buckets: { d7: b7, d30: b30 },
+      warranty_due: warrantyDue.slice(0, TOP_N), warranty_count: warrantyDue.length,
+    },
     aging: { receivable: agingFor('in'), payable: agingFor('out'), top_overdue: topOverdue },
     reminders,
     // ---- 首页 2.0（管理系统风格）新增数据块 ----
