@@ -144,6 +144,43 @@ try {
   check('下拉选项只下发用得到的表', false, e.message);
 }
 
+console.log('[6] 列表合计：虚拟列不能丢、两种算法要对得上');
+try {
+  // 列表的合计有两条代码路径：
+  //   · 分页时 —— 真实列交给 SQL SUM，虚拟列（已收付/未收付/变更额/项目汇总）
+  //     要把筛选结果整体装饰一遍再求和；
+  //   · 不分页时 —— 直接用已经取到的 rows 求和。
+  // 两条路径必须给出同一组数字，否则「翻页前后合计不一样」这种问题会非常难查。
+  const cases = [
+    { t: 'invoices', v: ['paid_amount', 'unpaid_amount'] },
+    { t: 'schedules', v: ['paid_amount', 'remaining'] },
+    { t: 'contracts', v: ['change_amount', 'final_amount'] },
+    { t: 'projects', v: ['contract_in', 'paid_in', 'receivable'] },
+  ];
+  const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : 0);
+  const bad = [];
+  for (const c of cases) {
+    const paged = dbf.listRows(c.t, { limit: 1 });
+    if (!paged.total) continue;                       // 空表没有可比性
+    // 1) 键名不能是 "undefined"：曾经写成 sums[f.name]（f 是字符串），
+    //    结果所有虚拟列合计全部丢失，返回里多出一个 "undefined": 0。
+    if (Object.prototype.hasOwnProperty.call(paged.sums, 'undefined')) bad.push(`${c.t}: 合计里出现了 undefined 键`);
+    // 2) 每个虚拟列都要有数字，哪怕值是 0（缺失说明根本没算）
+    for (const k of c.v) {
+      if (typeof paged.sums[k] !== 'number') bad.push(`${c.t}.${k} 没有合计值`);
+    }
+    // 3) 分页与不分页两种算法结果一致
+    const all = dbf.listRows(c.t, {});
+    for (const k of c.v) {
+      const a = num(paged.sums[k]), b = num(all.sums[k]);
+      if (Math.abs(a - b) > 0.5) bad.push(`${c.t}.${k}: 分页 ${a} ≠ 全量 ${b}`);
+    }
+  }
+  check('列表合计的虚拟列齐全且两种算法一致', bad.length === 0, bad.join('；') || `${cases.length} 张表全部对得上`);
+} catch (e) {
+  check('列表合计的虚拟列齐全且两种算法一致', false, e.message);
+}
+
 const pass = results.filter(r => r.ok).length;
 console.log(`\n性能回归测试结果：${pass} / ${results.length} 项通过`);
 process.exit(pass === results.length ? 0 : 1);

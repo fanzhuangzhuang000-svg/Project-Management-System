@@ -15,6 +15,12 @@ const { execFileSync, spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const BASE = process.env.PMS_BASE || 'http://127.0.0.1:8787';
+// 端口从 BASE 推导，而不是写死 8787：
+// 本机已经装了一份在跑的正式系统时（它占着 8787），测试要能换端口跑，
+// 否则只能先停掉正在用的服务 —— 这正是之前踩过的坑。
+const PORT = (() => {
+  try { const u = new URL(BASE); return u.port || (u.protocol === 'https:' ? '443' : '80') } catch { return '8787' }
+})();
 const npm = process.env.PMS_NPM || 'npm';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -70,7 +76,7 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   if (!up) {
     console.log('    服务没在跑，正在启动…');
     const { spawn } = require('node:child_process');
-    spawn('node', ['--no-warnings', 'server.js', '--port', '8787'], { cwd: ROOT, stdio: 'ignore', detached: true }).unref();
+    spawn('node', ['--no-warnings', 'server.js', '--port', PORT], { cwd: ROOT, stdio: 'ignore', detached: true }).unref();
     for (let i = 0; i < 30 && !up; i++) { await sleep(500); try { const r = await fetch(BASE + '/api/health'); up = r.ok } catch { /* 等 */ } }
   }
   row('服务可访问', up, up ? BASE : '✗ 启动失败');

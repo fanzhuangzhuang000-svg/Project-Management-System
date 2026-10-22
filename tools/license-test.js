@@ -18,8 +18,16 @@ const check = (name, ok, extra = '') => {
   console.log(`${ok ? '  ✓' : '  ✗'} ${name}${extra ? '  — ' + extra : ''}`);
 };
 
-/** 固定「今天」，避免测试结果随真实日期漂移 */
-const TODAY = new Date('2026-10-06T00:00:00');
+/**
+ * 「今天」—— 取真实当天，而不是写死一个日期。
+ *
+ * 曾经写死为 new Date('2026-10-06')，理由是「避免结果随真实日期漂移」。
+ * 但这里有一半用例是打到**服务端**的（setLic → 服务端用真实系统时间校验），
+ * 一旦真实时间走过 2026-10-16，`day(10)` 造出来的就是过去日期，
+ * 「即将到期 → warn」这条必然变成 expired，测试在代码没动的情况下自己坏了。
+ * 纯函数用例（licenseStatus(code, TODAY)）仍然显式传同一个基准日，结果依然稳定。
+ */
+const TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d })();
 const day = (offset) => {
   const d = new Date(TODAY.getTime() + offset * 86400000);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

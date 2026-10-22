@@ -389,17 +389,8 @@ if (tCond) where.push(tCond);
   const rows = db.prepare(`SELECT ${cols.join(', ')} FROM ${from} ${whereSQL} ${orderSQL}${pageSQL}`).all(...params);
 
   // ---------- 装饰「当前页」这几行 ----------
-  // 项目台账：把合同额、已收款、应收余额、毛利率等实时汇总值填进虚拟列
-  if (table === 'projects') {
-    const map = projectStatsMany(rows.map(r => r.id));
-    for (const r of rows) Object.assign(r, map[r.id] || {});
-  }
-  // 合同：把「变更增减 / 最终金额」算出来
-  if (table === 'contracts') decorateContracts(rows);
-  // 收付款计划：按计划日期先后自动冲抵实际收付款，算出已收付/未收付/状态
-  if (table === 'schedules') decorateSchedules(rows);
-  // 发票：算出这张票收/付了多少钱
-  if (table === 'invoices') decorateInvoices(rows);
+  // 走统一的批量入口：装饰函数内部是整表聚合，逐行调用会退化成 N+1。
+  decorateBatch(table, rows);
 
   // ---------- 合计 ----------
   // 合计的口径是「当前筛选条件下的全部记录」，不是只有本页 —— 界面上也这么标注。
@@ -408,7 +399,12 @@ if (tCond) where.push(tCond);
   if (moneyFields.length) {
     if (limit && total > rows.length) {
       // 分页时：真实列用 SQL 直接 SUM；虚拟列（projects 的金额列）需要全量算一次
-      const virtuals = moneyFields.filter(f => f.virtual).map(f => f.name);
+      //
+      // ⚠️ 这里存的是**列名字符串**，不是字段对象 —— 所以下面一律用 `name`，
+      // 不能再写 `f.name`。曾经写成 `for (const f of virtuals) sums[f.name]`，
+      // 字符串的 .name 是 undefined，结果所有虚拟列（已收付/未收付/变更额/
+      // 项目合同额…）的页脚合计**全部丢失**，返回里还多了一个 "undefined": 0。
+      const virtualNames = moneyFields.filter(f => f.virtual).map(f => f.name);
       const realFields = moneyFields.filter(f => !f.virtual);
       const alias = (n) => `${table === 'contracts' ? 't.' : 't.'}${n}`;
 
@@ -421,18 +417,24 @@ if (tCond) where.push(tCond);
       }
 
       // 虚拟金额列：合同表是 变更额/最终金额，其余表按项目汇总一次即可
-      if (virtuals.length) {
+      if (virtualNames.length) {
         if (table === 'projects') {
           const ids = db.prepare(`SELECT t.id AS id FROM ${from} ${whereSQL}`).all(...params).map(r => r.id);
           const map = projectStatsMany(ids);
-          for (const f of virtuals) {
-            sums[f.name] = round2(ids.reduce((s, id) => s + num((map[id] || {})[f.name]), 0));
+          for (const name of virtualNames) {
+            sums[name] = round2(ids.reduce((s, id) => s + num((map[id] || {})[name]), 0));
           }
         } else {
-          // 其它表的虚拟金额列：把筛选结果的这几列轻量取出来，批量装饰后求和
-          const light = db.prepare(`SELECT t.id AS id FROM ${from} ${whereSQL}`).all(...params).map(r => r.id);
-          const decorated = light.map(id => getRow(table, id)).filter(Boolean);
-          for (const f of virtuals) sums[f.name] = round2(decorated.reduce((s, r) => s + num(r[f.name]), 0));
+          // 其它表的虚拟金额列：把筛选结果整体取出来，**一次**批量装饰后求和。
+          //
+          // 以前这里写的是 `ids.map(id => getRow(table, id))`，而 getRow 每取一行
+          // 都会重跑一遍整表聚合（发票→payments 全表 GROUP BY，计划→全表冲抵）。
+          // 8000 张发票 × 3 万笔收付款 ≈ 2.4 亿行，实测 41 秒；
+          // 计划表 1.2 万节点 × 4.2 万行更是直接跑不完（>90 秒超时）。
+          // 现在固定为「一次全表聚合 + 内存求和」，耗时与行数无关。
+          const light = db.prepare(`SELECT ${cols.join(', ')} FROM ${from} ${whereSQL}`).all(...params);
+          decorateBatch(table, light);
+          for (const name of virtualNames) sums[name] = round2(light.reduce((s, r) => s + num(r[name]), 0));
         }
       }
     } else {
@@ -449,11 +451,9 @@ function getRow (table, id) {
   // 单条也要隔离：否则知道 id 就能跨租户读别人的数据
   const tCondG = tenantCtx.scope("t.");   const row = db.prepare(`SELECT ${cols.join(', ')} FROM ${from} WHERE t.id = ?` + (tCondG ? ` AND ${tCondG}` : '')).get(parseInt(id, 10)) || null;
   if (!row) return null;
-  // 单条也要带上虚拟列，否则详情/编辑拿到的数据和列表里对不上
-  if (table === 'contracts') decorateContracts([row]);
-  if (table === 'invoices') decorateInvoices([row]);
-  if (table === 'schedules') decorateSchedules([row]);
-  if (table === 'projects') Object.assign(row, projectStats(row.id));
+  // 单条也要带上虚拟列，否则详情/编辑拿到的数据和列表里对不上。
+  // 同样走批量入口（传一个元素的数组），保证和列表口径一致。
+  decorateBatch(table, [row]);
   return row;
 }
 
@@ -786,6 +786,36 @@ function decorateInvoices (rows) {
     // 未收付不取负：多收的部分在"已收付"里能看出来
     r.unpaid_amount = round2(Math.max(0, num(r.total_amount) - p));
   }
+  return rows;
+}
+
+/**
+ * 给一批行补虚拟列（项目汇总 / 合同变更 / 计划冲抵 / 发票收付）。
+ *
+ * ⚠️ 所有「补虚拟列」的地方都必须走这里，包括只有一行的时候。
+ * 原因是这几个装饰函数的内部实现都是**对整表做一次聚合**：
+ *   decorateInvoices  → invoicePaidMap，对 payments 全表 GROUP BY
+ *   decorateSchedules → scheduleAllocation，全表扫 schedules + payments
+ *   decorateContracts → changeMap，对 contract_changes 全表 GROUP BY
+ * 单次调用的开销是固定的，看起来很便宜；但一旦放进循环就变成
+ * 「行数 × 全表扫描」。列表汇总曾经写成 `ids.map(id => getRow(table, id))`，
+ * 8000 张发票 × 3 万笔收付款 ≈ 2.4 亿行，/api/list/invoices 实测 41 秒；
+ * 而 node:sqlite 是同步 API，这 41 秒里整个服务不响应任何请求。
+ *
+ * 所以：**永远整批传进来，不要逐行调用。**
+ */
+function decorateBatch (table, rows) {
+  if (!rows || !rows.length) return rows;
+  // 项目台账：合同额、已收款、应收余额、毛利率等实时汇总值
+  if (table === 'projects') {
+    // 用批量版：一次查出所有项目的汇总，避免每个项目一套 SQL
+    const map = projectStatsMany(rows.map(r => r.id));
+    for (const r of rows) Object.assign(r, map[r.id] || {});
+    return rows;
+  }
+  if (table === 'contracts') return decorateContracts(rows);
+  if (table === 'schedules') return decorateSchedules(rows);
+  if (table === 'invoices') return decorateInvoices(rows);
   return rows;
 }
 

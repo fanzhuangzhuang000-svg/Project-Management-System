@@ -155,6 +155,59 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    version: 5,
+    name: '列表排序与关联查询补索引',
+    up (db) {
+      // ── 为什么需要这一版 ──
+      // 之前所有索引只覆盖 id / project_id / tenant_id（见 db.js 建表那两行），
+      // 而列表页的默认排序键全是业务日期：收付款按 pay_date、发票按 issue_date、
+      // 费用按 expense_date、计划按 due_date。这些列一个索引都没有，
+      // 于是每条列表请求都是「整表扫 + 临时 B 树排序 + 取前 50 行」，
+      // 数据量到几万行就从几十毫秒涨到几百毫秒甚至几秒。
+      //
+      // 复合索引里带上 id 的原因：排序是 `ORDER BY 日期 DESC, id DESC`，
+      // 只有 (日期, id) 两列都有序，才能完全免掉那次排序步骤。
+      // （SQLite 的 rowid 表本来就把 rowid 挂在索引尾部，多写一次没有额外代价；
+      //   而 PostgreSQL 必须显式写，否则还是要 sort。）
+      const tableExists = (t) => {
+        try {
+          return db.dialect === 'postgres'
+            ? !!db.prepare(`SELECT table_name FROM information_schema.tables
+                WHERE table_schema = current_schema() AND table_name = ?`).get(t)
+            : !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(t);
+        } catch { return false }
+      };
+      const colExists = (t, c) => {
+        try { return db.columns(t).includes(c) } catch { return false }
+      };
+      // 表和列都在才建：迁移跑在建表之前，缺一张表就让整条迁移失败得不偿失
+      const idx = (name, table, cols) => {
+        if (!tableExists(table)) return;
+        if (!cols.every(c => colExists(table, c))) return;
+        db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON "${table}"(${cols.join(', ')});`);
+      };
+
+      // 收付款：列表按发生日期倒序翻页；发票勾稽按 invoice_id 分组；按合同筛选
+      idx('idx_payments_pay_date', 'payments', ['pay_date', 'id']);
+      idx('idx_payments_invoice', 'payments', ['invoice_id']);
+      idx('idx_payments_contract', 'payments', ['contract_id']);
+      // 发票：列表按开票日期倒序；按合同/单位筛选
+      idx('idx_invoices_issue_date', 'invoices', ['issue_date', 'id']);
+      idx('idx_invoices_contract', 'invoices', ['contract_id']);
+      // 收付款计划：列表按到期日倒序；
+      // 冲抵算法（scheduleAllocation）是按 project_id + direction + due_date 顺序遍历的
+      idx('idx_schedules_due_date', 'schedules', ['due_date', 'id']);
+      idx('idx_schedules_alloc', 'schedules', ['project_id', 'direction', 'due_date', 'id']);
+      // 费用：列表按发生日期倒序
+      idx('idx_expenses_expense_date', 'expenses', ['expense_date', 'id']);
+      // 合同变更：changeMap 每次都按 合同 + 已确认 汇总
+      idx('idx_changes_contract_status', 'contract_changes', ['contract_id', 'status']);
+      // 合同：项目台账按 项目 + 方向 聚合；列表按签订日期
+      idx('idx_contracts_project_dir', 'contracts', ['project_id', 'direction']);
+      idx('idx_contracts_sign_date', 'contracts', ['sign_date', 'id']);
+    },
+  },
 ];
 
 const TABLE = 'schema_migrations';
