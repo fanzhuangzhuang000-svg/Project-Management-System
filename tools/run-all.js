@@ -279,13 +279,20 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     }
     return max;
   }
+  /**
+   * ⚠️ 判据里**不能**包含 public/。
+   * 本脚本第 1 步自己就会 `npm run build` 重建 public/，它的 mtime 永远比
+   * 上一次打的安装包新 —— 那样第 6 步永远跳过，等于把这一整段验证废掉。
+   * 真正决定包内容的是前端源码（web/src）、后端源码和安装脚本，比这几处就够了。
+   */
   const srcMtime = Math.max(
     newestMtime(path.join(ROOT, 'web', 'src')),
-    newestMtime(path.join(ROOT, 'public')),
-    ...['server.js', 'db.js', 'auth.js', 'ai.js', 'attachments.js'].map(f => {
+    ...['server.js', 'db.js', 'auth.js', 'ai.js', 'attachments.js', 'schema.js', 'migrations.js'].map(f => {
       try { return fs.statSync(path.join(ROOT, f)).mtimeMs } catch { return 0 }
     }),
-    (() => { try { return fs.statSync(path.join(ROOT, 'tools', 'build-installer.js')).mtimeMs } catch { return 0 } })(),
+    ...['build-installer.js', path.join('installer', 'Installer.cs')].map(f => {
+      try { return fs.statSync(path.join(ROOT, 'tools', f)).mtimeMs } catch { return 0 }
+    }),
   );
   const exeStale = exeForVerify && fs.existsSync(exeForVerify) && fs.statSync(exeForVerify).mtimeMs < srcMtime;
 
