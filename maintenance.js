@@ -24,13 +24,14 @@ const snap = require('./snapshots.js');
 /**
  * 跑一次日常维护。
  * 任何一步失败都不影响其它步骤 —— 备份失败不该连带把回收站清理也停掉。
- * @returns {{backup:object|null, trash:object, orphans:number, snap:number, errors:string[]}}
+ * @returns {{backup:object|null, trash:object, orphans:number, snap:number, sessions:number, errors:string[]}}
  */
 function runDaily () {
   const errors = [];
 
   // 1) 过期会话：登录态本身有 30 天期限，过期的行不清就会越积越多
-  try { auth.purgeExpired(); } catch (e) { errors.push('过期会话：' + e.message); }
+  let sessions = 0;
+  try { sessions = auth.purgeExpired() || 0; } catch (e) { errors.push('过期会话：' + e.message); }
 
   // 2) 没人认领的暂存附件（上传后没保存表单），超过 7 天清掉。
   //    注意 detached=1（用户主动选「保留附件」）的不算，purgeOrphans 内部已排除。
@@ -52,7 +53,7 @@ function runDaily () {
     if (!bk.hasBackupToday()) backup = bk.makeBackup('auto');
   } catch (e) { errors.push('自动备份：' + e.message); }
 
-  return { backup, trash: trashResult, orphans, snap: snapMade, errors };
+  return { backup, trash: trashResult, orphans, snap: snapMade, sessions, errors };
 }
 
 module.exports = { runDaily };

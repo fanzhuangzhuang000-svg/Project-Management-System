@@ -2186,6 +2186,7 @@ if (!seedResult.existed) {
 //    自动备份只有装完那天的一份、暂存附件与过期会话一直不回收、月度快照缺月。
 const maintenance = require('./maintenance.js');
 const dailyBoot = maintenance.runDaily();
+const sessionsPurged = dailyBoot.sessions;
 const purged = dailyBoot.orphans;
 const trashPurged = dailyBoot.trash;
 const snapMade = dailyBoot.snap;
