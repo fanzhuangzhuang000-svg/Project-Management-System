@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { http, setUnauthorizedHandler, type AppSettings, type Dashboard, type LicenseInfo, type Meta, type User } from '@/lib/api'
+import { http, setUnauthorizedHandler, type AppSettings, type Dashboard, type DbMigration, type LicenseInfo, type Meta, type User } from '@/lib/api'
 
 interface AppState {
   user: User | null
@@ -22,6 +22,8 @@ interface AppState {
   /** 授权状态（离线校验） */
   license: LicenseInfo | null
   refreshLicense: () => Promise<void>
+  /** 数据库结构升级结果：error 非空 = 库还停在旧版本，界面要挂横幅提醒 */
+  dbMigration: DbMigration | null
 }
 
 /** 后端拿不到设置时的兜底，和后端 DEFAULT_SETTINGS 保持一致 */
@@ -52,6 +54,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [trashCount, setTrashCount] = useState(0)
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [license, setLicense] = useState<LicenseInfo | null>(null)
+  const [dbMigration, setDbMigration] = useState<DbMigration | null>(null)
   const booted = useRef(false)
 
   const refreshDash = useCallback(async () => {
@@ -88,6 +91,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setNeedLogin(false)
       if (me.settings) setSettings(me.settings)
       if (me.license) setLicense(me.license)
+      setDbMigration(me.dbMigration ?? null)
       await Promise.all([refreshMeta(), refreshDash()])
     } catch (e: any) {
       setNeedLogin(true)
@@ -119,7 +123,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<AppState>(() => ({
     user, meta, dash, loading, refreshDash, refreshMeta, setUser: applyUser,
-    needLogin, firstRun, trashCount, setTrashCount, settings, refreshSettings, license, refreshLicense,
+    needLogin, firstRun, trashCount, setTrashCount, settings, refreshSettings, license, refreshLicense, dbMigration,
   }), [user, meta, dash, loading, refreshDash, refreshMeta, applyUser, needLogin, firstRun, trashCount, settings, refreshSettings, license, refreshLicense])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

@@ -449,11 +449,37 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
 const post = <T = any>(path: string, body?: unknown) =>
   api<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}) })
 
+/**
+ * 删除接口的返回。
+ * `trashError` 非空 = 回收站没存下快照 —— 记录已经删了，但**还原不了**。
+ * 这种情况下界面必须明说，不能还拿「30 天内可还原」当承诺。
+ */
+export interface DeleteResult {
+  ok?: boolean
+  deleted?: number
+  removedAttachments?: number
+  removedFiles?: number
+  keptAttachments?: boolean
+  trashId?: number | null
+  trashError?: string | null
+}
+
+/**
+ * 数据库结构升级的结果。
+ * `error` 非空 = 库还停在旧版本（典型原因：升级前备份撞名，迁移被中止）。
+ * 这种情况必须让用户看见 —— 继续录入可能缺字段。
+ */
+export interface DbMigration {
+  version: number
+  error: string | null
+  backup: string | null
+}
+
 export const http = {
   /* 认证 */
   login: (username: string, password: string) => post<{ ok: boolean; user: User }>('/api/login', { username, password }),
   logout: () => post('/api/logout'),
-  me: () => api<{ user: User; tables: string[]; sysKeys: string[]; settings: AppSettings; license: LicenseInfo }>('/api/me'),
+  me: () => api<{ user: User; tables: string[]; sysKeys: string[]; settings: AppSettings; license: LicenseInfo; dbMigration?: DbMigration }>('/api/me'),
   /** 首页右侧栏「通知公告」 */
   notices: () => api<{ company: NoticeRow[]; holiday: NoticeRow[]; system: NoticeRow[] }>('/api/notices'),
   changePassword: (oldPw: string, newPw: string) => post('/api/me/password', { old: oldPw, new: newPw }),
@@ -476,8 +502,8 @@ export const http = {
   },
   get: (table: string, id: number | string) => api<Row>(`/api/get/${table}/${id}`),
   save: (table: string, body: Record<string, any>) => post<{ ok: boolean; id: number; row: Row; /** 后端顺带做的事，比如「已自动创建主合同」 */ note?: string }>(`/api/save/${table}`, body),
-  remove: (table: string, id: number | string, body: Record<string, any> = {}) => post(`/api/delete/${table}/${id}`, body),
-  batchDelete: (table: string, ids: number[], body: Record<string, any> = {}) => post('/api/batch-delete', { table, ids, ...body }),
+  remove: (table: string, id: number | string, body: Record<string, any> = {}) => post<DeleteResult>(`/api/delete/${table}/${id}`, body),
+  batchDelete: (table: string, ids: number[], body: Record<string, any> = {}) => post<DeleteResult>('/api/batch-delete', { table, ids, ...body }),
 
   /* 项目 */
   project: (id: number | string) => api<any>(`/api/project/${id}`),

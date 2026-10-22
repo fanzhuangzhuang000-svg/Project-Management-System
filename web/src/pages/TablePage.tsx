@@ -14,7 +14,7 @@ import { TrendLines, DonutWithLegend, MiniBars } from '@/components/ui/charts'
 import { RecordForm } from '@/components/form/RecordForm'
 import { useConfirm, useToast } from '@/components/ui/overlay'
 import { useApp } from '@/app-context'
-import { http, api, EMPTY_TOTALS, type Row } from '@/lib/api'
+import { http, api, EMPTY_TOTALS, type Row, type DeleteResult } from '@/lib/api'
 import { cn, fmtMoney, fmtWan, n0, fmtInt } from '@/lib/utils'
 
 const TABLE_ICON: Record<string, any> = {
@@ -75,23 +75,48 @@ export default function TablePage() {
   }
 
   /* ---------- 删除 ---------- */
+  /**
+   * 统一的删除结果提示。
+   * 后端如果 snapshot 失败会带回 trashError —— 记录已经删了、但没进回收站，
+   * 还原不了。这种情况必须说清楚，不能照旧回一句「30 天内可以还原」。
+   */
+  /**
+   * 关联数据计数提示。
+   * 后端返回的键是**表名**（schedules / payments / contract_changes…），
+   * 原来直接拼进确认框，中文界面上就成了「将同时处理：schedules 2、payments 3」。
+   * 翻译放在这里而不是服务端：接口保持机器可读，展示归展示。
+   */
+  const depText = (deps: Record<string, number> | undefined) =>
+    Object.entries(deps || {})
+      .filter(([, v]) => v > 0)
+      .map(([k, v]) => `${k === 'attachments' ? '附件' : (meta?.tables?.[k]?.label || k)} ${v}`)
+      .join('、')
+
+  const afterDelete = (r: DeleteResult | undefined, extra = '') => {
+    if (r?.trashError) {
+      toast(`已删除${extra}，但回收站没存下快照（${r.trashError}），这条记录无法还原`, 'err', 9000)
+    } else {
+      toast(`已删除${extra}`, 'ok')
+    }
+  }
+
   const doDelete = async (row: Row) => {
     const label = row[def?.display || 'name'] ?? `#${row.id}`
     const ok = await confirm(`删除「${label}」？`, '删除的记录会进回收站，30 天内可以还原。', '删除', true)
     if (!ok) return
     try {
-      const r: any = await http.remove(table, row.id)
-      toast(`已删除${r?.removedAttachments ? `（含 ${r.removedAttachments} 个附件）` : ''}`, 'ok')
+      const r = await http.remove(table, row.id)
+      afterDelete(r, r?.removedAttachments ? `（含 ${r.removedAttachments} 个附件）` : '')
       void load(); void refreshDash()
     } catch (e: any) {
       // 409 = 有关联数据，需要二次确认级联
       if (e.status === 409 && e.data?.needConfirm) {
-        const deps = Object.entries(e.data.dependents || {}).map(([k, v]) => `${k} ${v}`).join('、')
+        const deps = depText(e.data.dependents)
         const ok2 = await confirm('存在关联数据', `将同时处理：${deps}。确定继续？`, '确定删除', true)
         if (!ok2) return
         try {
-          await http.remove(table, row.id, { cascade: true })
-          toast('已删除', 'ok'); void load(); void refreshDash()
+          const r2 = await http.remove(table, row.id, { cascade: true })
+          afterDelete(r2); void load(); void refreshDash()
         } catch (e2) { toast((e2 as Error).message, 'err') }
       } else toast(e.message, 'err')
     }
@@ -102,16 +127,16 @@ export default function TablePage() {
     const ok = await confirm(`删除选中的 ${selected.length} 条？`, '删除的记录会进回收站，30 天内可以还原。', '删除', true)
     if (!ok) return
     try {
-      await http.batchDelete(table, selected, {})
-      toast(`已删除 ${selected.length} 条`, 'ok')
+      const r = await http.batchDelete(table, selected, {})
+      afterDelete(r, ` ${selected.length} 条`)
       setSelected([]); void load(); void refreshDash()
     } catch (e: any) {
       if (e.status === 409 && e.data?.needConfirm) {
-        const deps = Object.entries(e.data.dependents || {}).map(([k, v]) => `${k} ${v}`).join('、')
+        const deps = depText(e.data.dependents)
         const ok2 = await confirm('存在关联数据', `将同时处理：${deps}。确定继续？`, '确定删除', true)
         if (!ok2) return
-        await http.batchDelete(table, selected, { cascade: true })
-        toast(`已删除 ${selected.length} 条`, 'ok')
+        const r2 = await http.batchDelete(table, selected, { cascade: true })
+        afterDelete(r2, ` ${selected.length} 条`)
         setSelected([]); void load(); void refreshDash()
       } else toast(e.message, 'err')
     }

@@ -3,6 +3,7 @@ import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { AiAssistant } from './AiAssistant'
 import { LicenseBanner } from './LicenseBanner'
+import { DbMigrationBanner } from './DbMigrationBanner'
 import { DashAside } from './DashAside'
 import { useApp, DEFAULT_SETTINGS } from '@/app-context'
 import { titleOf } from '@/lib/nav'
@@ -37,6 +38,10 @@ export function AppShell() {
 
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-y-auto px-6 pb-24 pt-5">
+            {/* 数据库结构升级失败（正常时不渲染任何东西）—— 比授权更靠前：
+                授权到期只是不能录入，结构不对是录错了都不知道 */}
+            <DbMigrationBanner />
+
             {/* 授权到期提醒（正常时不渲染任何东西） */}
             <LicenseBanner />
 
