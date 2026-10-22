@@ -106,6 +106,10 @@ function copyDir (from, to) {
     log('复制 Node 运行环境…  ' + path.basename(nodeExe) + '  ' + mb(nodeSize));
     fs.copyFileSync(nodeExe, path.join(STAGE, 'node.exe'));
 
+    // 应用图标：安装目录里也放一份，快捷方式直接引用它。
+    // 没有它就只能用 node.exe 的图标 —— 桌面上一排绿色小恐龙，用户认不出是哪个程序。
+    if (fs.existsSync(ICON)) fs.copyFileSync(ICON, path.join(STAGE, 'app.ico'));
+
     // 后端模块（从 require 自动推出来的）
     const appDir = path.join(STAGE, 'app');
     fs.mkdirSync(path.join(appDir, 'tools'), { recursive: true });
@@ -172,13 +176,33 @@ function copyDir (from, to) {
   ];
   for (const r of refs) if (!fs.existsSync(r)) throw new Error('缺少程序集：' + r);
 
+  // 版本号单一来源 = package.json。
+  // 以前安装器里写死 DisplayVersion = "2.0.0"，而 package.json 是 1.1.1，
+  // 「应用和功能」里看到的版本永远是错的，报障时光对版本号就要扯半天。
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  if (!pkg.version) throw new Error('package.json 里没有 version');
+  const verCs = path.join(OUT, 'BuildInfo.cs');
+  fs.writeFileSync(verCs, `// 由 tools/build-installer.js 生成，不要手改
+namespace ElvPmsSetup {
+    static class BuildInfo {
+        public const string Version = "${pkg.version}";
+        public const string BuildTime = "${new Date().toISOString()}";
+    }
+}
+`, 'utf8');
+  log('版本号取自 package.json：' + pkg.version);
+
   // 注意：stdio 用 inherit 时 execFileSync 返回 null，不能对它调 .toString()
+  // /codepage:65001：Installer.cs 是 UTF-8 无 BOM。csc 默认按系统 ANSI（中文机是
+  // GBK）读源码，安装向导里那一堆中文提示就会变成乱码。显式声明编码，别碰运气。
   execFileSync(CSC, [
     '/nologo', '/target:winexe', '/platform:anycpu', '/optimize+',
+    '/codepage:65001',
     '/out:' + exe,
     ...(fs.existsSync(ICON) ? ['/win32icon:' + ICON] : []),
     ...refs.map(r => '/reference:' + r),
     '/resource:' + ZIP + ',Payload',
+    verCs,
     CS,
   ], { stdio: 'inherit' });
 
@@ -198,5 +222,6 @@ function copyDir (from, to) {
   // 清理中间产物（zip 已经打进 exe，payload 目录也不需要）
   fs.rmSync(ZIP, { force: true });
   fs.rmSync(STAGE, { recursive: true, force: true });
+  fs.rmSync(path.join(OUT, 'BuildInfo.cs'), { force: true });
   process.exit(0);
 })().catch(e => { console.error('\n  ✗ 打包失败：' + e.message); process.exit(1); });

@@ -41,6 +41,161 @@ namespace ElvPmsSetup
         static string installDir;
         static bool silent, noDesktop, noAutostart, uninstallMode;
 
+        /// <summary>
+        /// 「打开系统.vbs」的正文 —— 桌面图标的落点。
+        ///
+        /// 这是整个安装体验最容易被吐槽的一处。老版本桌面快捷方式只调「后台启动.vbs」，
+        /// 那个脚本只起服务、不开浏览器：用户双击完既没有窗口也没有网页，
+        /// 自然认为「图标点了没反应」，然后再双击几次 —— 于是起了好几个 node 抢 8787。
+        /// 所以这里必须做到：已在运行就直接开浏览器，没运行就等它起来再开。
+        ///
+        /// 探测方式也是踩过坑才定下来的：
+        ///   · 不能用 MSXML2.XMLHTTP 去请求 127.0.0.1 —— 系统代理会把本机请求也劫持走，
+        ///     代理绕不通就误判成「端口被占用」，服务明明好的却打不开。
+        ///   · 也不用 netstat | findstr —— 要起 cmd 进程、会闪黑窗，输出还受系统语言影响。
+        ///   现在用 WMI：MSFT_NetTCPConnection 问端口有没有在监听，
+        ///   Win32_Process 问跑的是不是本安装目录下的 node。
+        /// </summary>
+        static readonly string OPEN_VBS = @"
+' 弱电项目管理系统 · 一键打开
+'   已在运行  -> 直接打开浏览器
+'   没有运行  -> 后台静默启动，等端口就绪后自动打开浏览器
+'
+' 探测为什么不用 HTTP、也不用 netstat，见 Installer.cs 里的注释。
+Option Explicit
+
+Dim TITLE
+Dim sh, fso, appDir, url, nodePath, serverPath, dataPath, q
+Dim portLive, oursRunning, skipBrowse, argItem
+
+TITLE = ""弱电项目管理系统""
+
+' /no-browser：只把服务拉起来，不弹浏览器。
+' 给自动化测试和 IT 排障用 —— 否则每次验证都会在桌面上鼓捣出一堆浏览器窗口。
+skipBrowse = False
+For Each argItem In WScript.Arguments
+  If LCase(argItem) = ""/no-browser"" Then skipBrowse = True
+Next
+
+Set sh  = CreateObject(""WScript.Shell"")
+Set fso = CreateObject(""Scripting.FileSystemObject"")
+q = Chr(34)
+
+appDir     = fso.GetParentFolderName(WScript.ScriptFullName)
+nodePath   = appDir & ""\node.exe""
+serverPath = appDir & ""\app\server.js""
+dataPath   = appDir & ""\data""
+url        = ""http://127.0.0.1:"" & @PORT@
+
+If Not fso.FileExists(nodePath) Then
+  MsgBox ""找不到 node.exe，安装目录可能不完整："" & vbCrLf & appDir, 16, TITLE
+  WScript.Quit 2
+End If
+
+If Not fso.FolderExists(dataPath) Then fso.CreateFolder dataPath
+
+portLive    = PortListening(@PORT@)
+oursRunning = OursRunning()
+
+If (Not portLive) And (Not oursRunning) Then
+  sh.Popup ""正在启动服务，请稍候…"", 2, TITLE, 64
+
+  sh.CurrentDirectory = appDir & ""\app""
+  sh.Environment(""PROCESS"")(""PMS_DATA_DIR"") = dataPath
+  sh.Environment(""PROCESS"")(""PMS_PORT"")     = CStr(@PORT@)
+
+  sh.Run q & nodePath & q & "" --no-warnings "" & q & serverPath & q & "" --port "" & @PORT@, 0, False
+
+  portLive = WaitPort(@PORT@, 30)
+
+  If Not portLive Then
+    If OursRunning() Then
+      MsgBox ""服务进程起来了，但端口 @PORT@ 一直没监听上。"" & vbCrLf & vbCrLf & _
+             ""多半是被别的程序占用了，或者防火墙 / 杀毒软件拦了 node.exe。"" & vbCrLf & vbCrLf & _
+             ""日志："" & dataPath & ""\startup.log"", 48, TITLE
+    Else
+      MsgBox ""服务启动失败（进程起来后马上退出了）。"" & vbCrLf & vbCrLf & _
+             ""常见原因："" & vbCrLf & _
+             ""· 端口 @PORT@ 被其他程序占用"" & vbCrLf & _
+             ""· 杀毒软件拦截了 node.exe"" & vbCrLf & vbCrLf & _
+             ""日志："" & dataPath & ""\startup.log"", 48, TITLE
+    End If
+    WScript.Quit 3
+  End If
+
+  oursRunning = True
+End If
+
+If (Not oursRunning) And portLive Then
+  ' 端口上蹲着别人的服务。自动化场景下不要弹框（会卡住没人点的测试）
+  If skipBrowse Then WScript.Quit 0
+  If MsgBox(""端口 @PORT@ 上跑的不是本系统的服务（被别的程序占了）。"" & vbCrLf & vbCrLf & _
+            ""还是打开浏览器看看吗？"", vbYesNo + 48, TITLE) <> vbYes Then WScript.Quit 4
+End If
+
+If skipBrowse Then WScript.Quit 0
+sh.Run url, 1, False
+WScript.Quit 0
+
+' ---------- 探测 ----------
+
+' 端口是否处于监听状态（MSFT_NetTCPConnection.State = 2 即 Listen）
+Function PortListening(p)
+  Dim wmi, rows
+  PortListening = False
+  On Error Resume Next
+  Set wmi = GetObject(q & ""winmgmts:\\.\root\StandardCimv2"" & q)
+  If Err.Number <> 0 Then Err.Clear : Exit Function
+  Set rows = wmi.ExecQuery(q & ""select LocalPort from MSFT_NetTCPConnection where LocalPort="" & p & "" and State=2"" & q)
+  If Err.Number <> 0 Then Err.Clear : Exit Function
+  If Not (rows Is Nothing) Then
+    If rows.Count > 0 Then PortListening = True
+  End If
+  Err.Clear
+  On Error GoTo 0
+End Function
+
+' 轮询等端口就绪，最长 secs 秒
+Function WaitPort(p, secs)
+  Dim i
+  WaitPort = False
+  For i = 1 To secs * 2
+    If PortListening(p) Then
+      WaitPort = True
+      Exit Function
+    End If
+    WScript.Sleep 500
+  Next
+End Function
+
+' 本安装目录下是否有 node 在跑。
+' 默认返回 True（放行）：WMI 查不动时宁可多开一个浏览器，
+' 也不能凭空把用户拦住说「你的服务没起来」。
+Function OursRunning()
+  Dim wmi, procs, proc, exe, cmdline, target
+  OursRunning = True
+  target = LCase(appDir)
+  On Error Resume Next
+  Set wmi = GetObject(q & ""winmgmts:\\.\root\cimv2"" & q)
+  If Err.Number <> 0 Then Err.Clear : Exit Function
+  Set procs = wmi.ExecQuery(q & ""select ExecutablePath, CommandLine from Win32_Process where Name='node.exe'"" & q)
+  If Err.Number <> 0 Or procs Is Nothing Then Err.Clear : Exit Function
+  For Each proc In procs
+    exe = vbNullString
+    If Not IsNull(proc.ExecutablePath) Then exe = LCase(proc.ExecutablePath)
+    cmdline = vbNullString
+    If Not IsNull(proc.CommandLine) Then cmdline = LCase(proc.CommandLine)
+    If InStr(exe, target) > 0 Or InStr(cmdline, target) > 0 Then
+      Err.Clear
+      Exit Function
+    End If
+  Next
+  OursRunning = False
+  Err.Clear
+  On Error GoTo 0
+End Function
+";
+
         static string DefaultDir
         {
             get
@@ -140,10 +295,19 @@ namespace ElvPmsSetup
                 if (log != null) log("检测到已安装过，正在停止正在运行的服务…");
                 StopServer();
             }
+            // 解压之前先备份数据库。
+            // 理由：覆盖安装是唯一会动到用户现有文件的时刻，解压中途失败（磁盘满、
+            // 杀软锁文件、断电）会留下一个半截的库。这时候有一份 30 秒前的副本，
+            // 比事后跟用户解释「数据可能受损」有用得多。
+            BackupDb(log, "安装前自动备份");
             if (log != null) log("正在解压程序文件（约 30 秒）…");
             ExtractPayload(log);
             if (log != null) log("正在创建启动器…");
             WriteLaunchers();
+            // 顺序要紧：CreateShortcuts 会引用「卸载.exe」，
+            // 而首次安装时这个文件还没被复制出来 —— 先复制再建快捷方式，
+            // 否则开始菜单里的「卸载」指向一个不存在的路径，点了毫无反应。
+            CopyUninstaller();
             if (log != null) log("正在创建快捷方式…");
             CreateShortcuts();
             if (log != null) log("正在注册卸载信息…");
@@ -167,6 +331,58 @@ namespace ElvPmsSetup
             Directory.CreateDirectory(Path.Combine(installDir, "backup"));
         }
 
+        /// <summary>
+        /// 把 data\pms.db 复制一份到 backup\&lt;阶段&gt;\&lt;时间戳&gt;\。
+        ///
+        /// 只复制主库和它的 -wal / -shm，不复制整个 data 目录：
+        /// 附件可能几十 GB，全量拷贝会让安装卡十几分钟，用户会以为卡死了。
+        ///
+        /// 备份失败不阻断流程（磁盘满的情况下更要让安装继续，否则用户两头落空），
+        /// 但会写进日志，装完能查到。
+        /// </summary>
+        static void BackupDb(Action<string> log, string stage)
+        {
+            try
+            {
+                string db = Path.Combine(installDir, "data", "pms.db");
+                if (!File.Exists(db) || new FileInfo(db).Length == 0) return;
+
+                string root = Path.Combine(installDir, "backup", stage);
+                string dir = Path.Combine(root, DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+                Directory.CreateDirectory(dir);
+                File.Copy(db, Path.Combine(dir, "pms.db"), true);
+                // WAL 模式下最近的改动还在 -wal 里，光复制主库会丢掉最后一批写入
+                foreach (string ext in new string[] { "-wal", "-shm" })
+                {
+                    string side = db + ext;
+                    if (!File.Exists(side)) continue;
+                    try { File.Copy(side, Path.Combine(dir, "pms.db" + ext), true); }
+                    catch { /* 辅助文件拷不到就算了，主库已经有了 */ }
+                }
+                if (log != null) log("数据库已备份到 " + dir);
+                PruneBackups(root, 3);
+            }
+            catch (Exception ex)
+            {
+                if (log != null) log("警告：备份数据库失败（" + ex.Message + "），继续安装");
+            }
+        }
+
+        /// <summary>只保留最近 keep 份自动备份，别让 backup 目录无限长</summary>
+        static void PruneBackups(string root, int keep)
+        {
+            try
+            {
+                string[] dirs = Directory.GetDirectories(root);
+                Array.Sort(dirs, StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < dirs.Length - keep; i++)
+                {
+                    try { Directory.Delete(dirs[i], true); } catch { }
+                }
+            }
+            catch { }
+        }
+
         /// <summary>把内嵌的 payload.zip 解到安装目录</summary>
         static void ExtractPayload(Action<string> log)
         {
@@ -180,10 +396,19 @@ namespace ElvPmsSetup
                     // 覆盖安装时偶尔会有文件还占着（服务刚停、系统还在释放句柄）。
                     // 收集起来最后一起报，别让用户看到一个没头没尾的失败。
                     List<string> locked = new List<string>();
+                    List<string> guarded = new List<string>();
                     foreach (ZipArchiveEntry e in zip.Entries)
                     {
                         string rel = e.FullName.Replace('/', Path.DirectorySeparatorChar);
                         string target = Path.Combine(installDir, rel);
+
+                        // 用户数据目录一律不碰。
+                        // 打安装包时本来就不该带 data/，但这是「丢数据」级别的事故，
+                        // 不能只靠打包脚本自觉 —— 在这里设一道硬闸：
+                        // 包里就算混进了 data\pms.db，也绝不覆盖用户正在用的库。
+                        string relNorm = rel.Replace('\\', '/').TrimStart('/');
+                        if (IsUserDataPath(relNorm)) { guarded.Add(relNorm); continue; }
+
                         // 防目录穿越
                         if (!Path.GetFullPath(target).StartsWith(Path.GetFullPath(installDir), StringComparison.OrdinalIgnoreCase))
                             continue;
@@ -214,6 +439,8 @@ namespace ElvPmsSetup
                         done++;
                         if (log != null && done % 5 == 0) log("解压中… " + done + "/" + total);
                     }
+                    if (guarded.Count > 0 && log != null)
+                        log("已跳过安装包内的 " + guarded.Count + " 个用户数据文件（不覆盖现有数据）");
                     if (locked.Count > 0)
                     {
                         throw new Exception(
@@ -223,6 +450,22 @@ namespace ElvPmsSetup
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// 判断 payload 里的路径是否属于「用户数据」或「用户备份」，这些一律不覆盖。
+        /// data 是业务库和附件，backup 是历史备份 —— 两者都是卸载时也要保留的东西，
+        /// 安装时自然更没有理由去覆盖。
+        /// </summary>
+        static bool IsUserDataPath(string rel)
+        {
+            if (rel.Length == 0) return false;
+            foreach (string dir in new string[] { "data", "backup" })
+            {
+                if (rel.Equals(dir, StringComparison.OrdinalIgnoreCase)) return true;
+                if (rel.StartsWith(dir + "/", StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
         }
 
         /// <summary>生成后台启动器 / 停止脚本 / 打开入口</summary>
@@ -277,6 +520,25 @@ namespace ElvPmsSetup
             stop.AppendLine("echo 已停止。");
             stop.AppendLine("timeout /t 2 >nul");
             File.WriteAllText(Path.Combine(installDir, "停止服务.bat"), stop.ToString(), Encoding.Default);
+
+            // ---- 打开系统.vbs ----
+            // 桌面图标和开始菜单的「打开系统」都指到这里。
+            // 和「后台启动.vbs」的分工：
+            //   后台启动.vbs —— 只起服务，不开浏览器（开机自启、IT 手工拉起用它）
+            //   打开系统.vbs —— 人双击的那种：起完服务自动把浏览器打开
+            File.WriteAllText(Path.Combine(installDir, "打开系统.vbs"),
+                Crlf(OPEN_VBS.Replace("@PORT@", PORT.ToString()).TrimStart('\r', '\n')),
+                Encoding.Default);
+        }
+
+        /// <summary>
+        /// 统一成 CRLF。
+        /// 模板写在源码里，检出时的换行风格取决于 git 配置；WScript 对混合换行
+        /// 的容忍度不稳，宁可在写文件时规整一遍。
+        /// </summary>
+        static string Crlf(string s)
+        {
+            return s.Replace("\r\n", "\n").Replace("\n", "\r\n");
         }
 
         static string Vbs(string s) { return s.Replace("\"", "\"\""); }
@@ -287,27 +549,60 @@ namespace ElvPmsSetup
             // 某些系统 wscript 在 System32 下不在 System 目录，兜一下
             if (!File.Exists(wscript)) wscript = Path.Combine(Environment.SystemDirectory, "wscript.exe");
 
-            string vbs = Path.Combine(installDir, "后台启动.vbs");
-            string icon = Path.Combine(installDir, "node.exe");
+            string openVbs = Path.Combine(installDir, "打开系统.vbs");
+            string serveVbs = Path.Combine(installDir, "后台启动.vbs");
+            string icon = AppIcon();
             string startMenu = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), APP_SHORT);
 
-            // 启动服务
-            MakeShortcut(Path.Combine(installDir, "启动服务.lnk"), wscript, "\"" + vbs + "\"", installDir, "启动 " + APP_SHORT, icon);
-            // 打开网页
+            MakeShortcut(Path.Combine(installDir, "打开系统.lnk"), wscript, "\"" + openVbs + "\"", installDir, "打开 " + APP_SHORT, icon);
+            MakeShortcut(Path.Combine(installDir, "启动服务.lnk"), wscript, "\"" + serveVbs + "\"", installDir, "启动 " + APP_SHORT, icon);
             MakeUrlShortcut(Path.Combine(installDir, "打开系统.url"), "http://127.0.0.1:" + PORT);
 
             if (!Directory.Exists(startMenu)) Directory.CreateDirectory(startMenu);
-            MakeShortcut(Path.Combine(startMenu, "启动服务.lnk"), wscript, "\"" + vbs + "\"", installDir, "启动 " + APP_SHORT, icon);
+            // 主入口放最上面：起服务 + 自动开浏览器，一个图标解决
+            MakeShortcut(Path.Combine(startMenu, "打开系统.lnk"), wscript, "\"" + openVbs + "\"", installDir, "打开 " + APP_SHORT, icon);
+            MakeShortcut(Path.Combine(startMenu, "启动服务.lnk"), wscript, "\"" + serveVbs + "\"", installDir, "启动 " + APP_SHORT, icon);
             MakeShortcut(Path.Combine(startMenu, "停止服务.lnk"), Path.Combine(installDir, "停止服务.bat"), "", installDir, "停止 " + APP_SHORT, icon);
             MakeUrlShortcut(Path.Combine(startMenu, "打开系统.url"), "http://127.0.0.1:" + PORT);
             MakeShortcut(Path.Combine(startMenu, "卸载.lnk"), Path.Combine(installDir, "卸载.exe"), "/uninstall", installDir, "卸载 " + APP_SHORT, null);
 
             if (!noDesktop)
             {
+                // 桌面上只放一个图标。
+                // 以前是 .lnk（只起服务，不弹网页）+ .url（只开网页）两个，
+                // 用户分不清该点哪个，点了 .lnk 又没任何反应 —— 现在合成一个。
                 string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-                MakeShortcut(Path.Combine(desktop, APP_SHORT + ".lnk"), wscript, "\"" + vbs + "\"", installDir, "启动 " + APP_SHORT, icon);
-                MakeUrlShortcut(Path.Combine(desktop, APP_SHORT + "（打开）.url"), "http://127.0.0.1:" + PORT);
+                MakeShortcut(Path.Combine(desktop, APP_SHORT + ".lnk"), wscript, "\"" + openVbs + "\"", installDir, "打开 " + APP_SHORT, icon);
+                OldDesktopUrlCleanup(desktop);
             }
+        }
+
+        /// <summary>
+        /// 清掉旧版本留在桌面的「xxx（打开）.url」。
+        /// 留着它就等于把「点错图标」这件事永久留在用户桌面上。
+        /// </summary>
+        static void OldDesktopUrlCleanup(string desktop)
+        {
+            try
+            {
+                string stale = Path.Combine(desktop, APP_SHORT + "（打开）.url");
+                if (File.Exists(stale)) File.Delete(stale);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// 快捷方式用哪个图标。
+        /// 以前一律用 node.exe 的图标 —— 桌面上一排绿油油的 Node 标志，
+        /// 谁看都不像是「项目管理系统」。安装包里带了 app.ico 就该用上。
+        /// </summary>
+        static string AppIcon()
+        {
+            string ico = Path.Combine(installDir, "app.ico");
+            if (File.Exists(ico)) return ico;
+            string un = Path.Combine(installDir, "卸载.exe");
+            if (File.Exists(un)) return un;
+            return Path.Combine(installDir, "node.exe");
         }
 
         static void MakeShortcut(string lnkPath, string target, string arguments, string workDir, string desc, string icon)
@@ -361,27 +656,47 @@ namespace ElvPmsSetup
             catch { }
         }
 
+        /// <summary>
+        /// 把自己复制一份成安装目录里的「卸载.exe」。
+        ///
+        /// 单独拎出来，是因为 CreateShortcuts 要引用这个路径 ——
+        /// 首次安装时它还不存在，快捷方式就会指向一个空路径，
+        /// 开始菜单里点「卸载」毫无反应（这正是用户报过的问题之一）。
+        /// </summary>
+        static void CopyUninstaller()
+        {
+            string self = Assembly.GetExecutingAssembly().Location;
+            if (string.IsNullOrEmpty(self)) return;
+            string target = Path.Combine(installDir, "卸载.exe");
+            if (string.Equals(self, target, StringComparison.OrdinalIgnoreCase)) return;
+            for (int i = 0; i < 3; i++)
+            {
+                try { File.Copy(self, target, true); return; }
+                catch
+                {
+                    // 覆盖安装时上一版卸载程序可能正开着，等它释放句柄
+                    Thread.Sleep(300);
+                }
+            }
+        }
+
         static void RegisterUninstall()
         {
             try
             {
-                // 把自己复制一份作为卸载程序
-                string self = Assembly.GetExecutingAssembly().Location;
-                string target = Path.Combine(installDir, "卸载.exe");
-                if (!string.Equals(self, target, StringComparison.OrdinalIgnoreCase))
-                {
-                    try { File.Copy(self, target, true); } catch { }
-                }
                 long size = 0;
-                try { size = new FileInfo(target).Length / 1024; } catch { }
+                try { size = new FileInfo(Path.Combine(installDir, "卸载.exe")).Length / 1024; } catch { }
 
                 using (RegistryKey k = Registry.CurrentUser.CreateSubKey(REG_UNINSTALL))
                 {
                     k.SetValue("DisplayName", APP_NAME);
-                    k.SetValue("DisplayVersion", "2.0.0");
+                    // 版本号不再写死在这里：以前这里固定 2.0.0，
+                    // 而 package.json 是 1.1.1，「应用和功能」里显示的版本永远是错的。
+                    // 现在由打包脚本按 package.json 生成 BuildInfo。
+                    k.SetValue("DisplayVersion", BuildInfo.Version);
                     k.SetValue("Publisher", "本公司");
                     k.SetValue("InstallLocation", installDir);
-                    k.SetValue("DisplayIcon", Path.Combine(installDir, "node.exe"));
+                    k.SetValue("DisplayIcon", AppIcon());
                     // 带上 /dir=：用户若选了非默认安装位置，卸载也能找到正确的目录
                     string uninst = "\"" + Path.Combine(installDir, "卸载.exe") + "\" /uninstall /dir=\"" + installDir + "\"";
                     k.SetValue("UninstallString", uninst);
@@ -415,6 +730,21 @@ namespace ElvPmsSetup
         }
 
         /// <summary>
+        /// 这个可执行文件是否属于本安装目录。
+        ///
+        /// 必须带上路径分隔符再比前缀：只比 "…\ELV-PMS" 的话，
+        /// 同级的 "…\ELV-PMS-测试\node.exe"、"…\ELV-PMS-old\node.exe" 都会被算进来，
+        /// 装一次新版就把同事电脑上另一套实例杀掉。
+        /// </summary>
+        static bool IsOurExe(string exe)
+        {
+            if (string.IsNullOrEmpty(exe)) return false;
+            string root = installDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                          + Path.DirectorySeparatorChar;
+            return exe.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
         /// 停掉本程序启动的服务。
         /// 按「可执行文件路径是否在安装目录下」判断，而不是按端口 ——
         /// 否则会误杀别的程序（比如同事自己起的开发服务）。
@@ -428,8 +758,7 @@ namespace ElvPmsSetup
                     try
                     {
                         string exe = p.MainModule.FileName;
-                        if (exe != null && exe.StartsWith(installDir, StringComparison.OrdinalIgnoreCase))
-                            p.Kill();
+                        if (IsOurExe(exe)) p.Kill();
                     }
                     catch { /* 拿不到模块信息就跳过（权限或已退出） */ }
                 }
@@ -445,8 +774,7 @@ namespace ElvPmsSetup
                     {
                         try
                         {
-                            string exe = p.MainModule.FileName;
-                            if (exe != null && exe.StartsWith(installDir, StringComparison.OrdinalIgnoreCase)) { alive = true; break; }
+                            if (IsOurExe(p.MainModule.FileName)) { alive = true; break; }
                         }
                         catch { }
                     }
@@ -468,8 +796,22 @@ namespace ElvPmsSetup
             if (MessageBox.Show(msg, "卸载 " + APP_SHORT, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
                 return 0;
             int r = RunUninstall(null);
-            MessageBox.Show(r == 0 ? "卸载完成。\n\n数据目录已保留：" + Path.Combine(installDir, "data") : "卸载过程中出现问题。",
-                "卸载", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (r == 0)
+            {
+                MessageBox.Show("卸载完成。\n\n你的数据还在：\n" + Path.Combine(installDir, "data")
+                    + "\n\n以后重新安装，这些数据会自动接上。",
+                    "卸载", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else
+            {
+                // 以前这里不看结果、一律报「卸载完成」，用户以为删干净了，
+                // 其实目录里还躺着一堆文件 —— 这是「卸载有问题」的主要来源。
+                MessageBox.Show("程序已从「应用和功能」里移除，但有几个文件正被占用，这次没能删掉。\n\n"
+                    + "重启电脑后，双击下面这个文件就能清干净：\n"
+                    + Path.Combine(installDir, "重启后清理.bat")
+                    + "\n\n你的数据仍在：\n" + Path.Combine(installDir, "data"),
+                    "卸载未完全结束", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
             return r;
         }
 
@@ -478,6 +820,12 @@ namespace ElvPmsSetup
             if (log != null) log("停止服务…");
             StopServer();
             Thread.Sleep(400);
+
+            // 卸载前把库再存一份到 backup 里。
+            // 虽然 data 目录本来就保留，但 uninstall 之后常见的下一步是
+            // 「装到别的盘」「换台机器」，那时候用户会下意识把整个目录删掉。
+            // backup 里有一份独立的库，是最后一道保险。
+            BackupDb(log, "卸载前自动备份");
 
             if (log != null) log("移除开机自启…");
             SetAutoStart(false);
@@ -530,23 +878,19 @@ namespace ElvPmsSetup
 
             if (blocked.Count > 0)
             {
-                if (log != null) log("以下项目删不掉（可能正在被占用）：" + string.Join("、", blocked.ToArray()));
-                if (!silent && Environment.UserInteractive)
-                {
-                    MessageBox.Show(
-                        "这些文件没能删掉：\n\n" + string.Join("\n", blocked.ToArray())
-                        + "\n\n常见原因是服务还在运行。可以重启电脑后再删一次，"
-                        + "或者手动删除目录：\n" + installDir,
-                        "卸载", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-                // 留个批处理，重启后能删干净
+                if (log != null) log("以下项目删不掉（可能正被占用）：" + string.Join("、", blocked.ToArray()));
+                // 留个批处理，重启后能删干净。
+                // 提示统一交给调用方给，这里再弹一次的话，向导模式会连弹两个框。
                 WriteCleanupScript(blocked);
             }
 
-            if (log != null) log("完成");
+            if (log != null) log(blocked.Count > 0 ? "完成（有残留文件）" : "完成");
             // 卸载程序自己延迟删除
             ScheduleSelfDelete();
-            return 0;
+            // 2 = 已经从系统里摘掉了，但目录里还有删不掉的文件。
+            // 调用方必须能区分这个状态 —— 以前不管成败都返回 0，
+            // 向导就一律报「卸载完成」，用户以为删干净了。
+            return blocked.Count > 0 ? 2 : 0;
         }
 
         /// <summary>删除失败时留一个「重启后清理.bat」，用户开机点一下就能清干净</summary>
@@ -595,14 +939,41 @@ namespace ElvPmsSetup
             catch { return false; }
         }
 
+        /// <summary>
+        /// 卸载程序自删（正在运行的 exe 不能删自己，只能交给外部进程）。
+        ///
+        /// 老实现两个毛病：
+        ///   1. 用 ping -n 3 只等 2 秒。卸完还要弹 MessageBox 告诉用户结果，
+        ///      那会儿进程还活着、文件还占着，del 必然失败 —— 于是每次卸载
+        ///      都会在目录里剩一个卸载.exe，看起来就是「没删干净」。
+        ///   2. 末尾直接 rmdir 安装目录。data / backup 是刻意保留的，
+        ///      这个 rmdir 永远失败，纯属噪音。
+        /// 现在改成：循环重试最多 15 次（每次 2 秒），删掉就收工。
+        /// </summary>
         static void ScheduleSelfDelete()
         {
             try
             {
                 string self = Assembly.GetExecutingAssembly().Location;
                 if (!Path.GetFileName(self).Equals("卸载.exe", StringComparison.OrdinalIgnoreCase)) return;
-                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe",
-                    "/c ping 127.0.0.1 -n 3 >nul & del /f /q \"" + self + "\" & rmdir \"" + installDir + "\" 2>nul");
+
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine("@echo off");
+                sb.AppendLine("setlocal");
+                sb.AppendLine("for /l %%i in (1,1,15) do (");
+                sb.AppendLine("  if not exist \"" + self + "\" goto done");
+                sb.AppendLine("  ping 127.0.0.1 -n 2 >nul");
+                sb.AppendLine("  del /f /q \"" + self + "\" >nul 2>&1");
+                sb.AppendLine(")");
+                sb.AppendLine(":done");
+                // 只有在 data / backup 也没了的情况下才删得掉，删不掉是正常的
+                sb.AppendLine("rmdir \"" + installDir + "\" >nul 2>&1");
+                sb.AppendLine("del /f /q \"%~f0\" >nul 2>&1");
+
+                string bat = Path.Combine(Path.GetTempPath(), "elv-pms-selfdel.bat");
+                File.WriteAllText(bat, sb.ToString(), Encoding.Default);
+
+                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"" + bat + "\"");
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
                 Process.Start(psi);
@@ -756,7 +1127,18 @@ namespace ElvPmsSetup
                 open.FlatStyle = FlatStyle.Flat; open.FlatAppearance.BorderSize = 0;
                 open.Click += delegate
                 {
-                    try { Process.Start("http://127.0.0.1:" + PORT); } catch { }
+                    try
+                    {
+                        // 走和桌面图标同一条链路：服务没起就起，起来了再开浏览器。
+                        // 直接 Process.Start(url) 的话，服务还没就绪时用户看到的是空白页，
+                        // 第一印象就成了「装完打不开」。
+                        string vbs = Path.Combine(installDir, "打开系统.vbs");
+                        if (File.Exists(vbs))
+                            Process.Start(WscriptPath(), "\"" + vbs + "\"");
+                        else
+                            Process.Start("http://127.0.0.1:" + PORT);
+                    }
+                    catch { }
                 };
                 page3.Controls.Add(open);
 

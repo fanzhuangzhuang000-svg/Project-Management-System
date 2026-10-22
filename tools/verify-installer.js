@@ -70,6 +70,25 @@ function killInstalled () {
   ps(`Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '${DIR}*' } | Stop-Process -Force -ErrorAction SilentlyContinue`);
 }
 
+/** 读快捷方式的目标 / 参数 / 图标。用 WScript.Shell 解析，比直接啃 .lnk 二进制稳 */
+function lnkInfo (lnk) {
+  const script = `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk}'); "$($s.TargetPath)|$($s.Arguments)|$($s.IconLocation)"`;
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    { encoding: 'utf8', timeout: 30000, windowsHide: true });
+  const out = (r.stdout || '').trim();
+  const [target = '', args = '', icon = ''] = out.split('|');
+  return { target: target.trim(), args: args.trim(), icon: icon.trim() };
+}
+
+/** 读注册表里某个值（卸载项用于展示版本号） */
+function regValue (name) {
+  const r = spawnSync('reg.exe', ['query', REG_KEY, '/v', name], { encoding: 'utf8' });
+  const line = (r.stdout || '').split('\n').find(l => l.includes(name));
+  if (!line) return '';
+  const parts = line.trim().split(/\s{2,}/);
+  return (parts[parts.length - 1] || '').trim();
+}
+
 /** 删目录，带重试：刚杀完进程时文件句柄还没释放会 EBUSY */
 async function forceRmDir (dir, tries = 8) {
   for (let i = 0; i < tries; i++) {
@@ -125,6 +144,8 @@ async function forceRmDir (dir, tries = 8) {
     ['app/tools/extract.js', '字段抽取'],
     ['app/tools/tabular.js', '表格解析'],
     ['后台启动.vbs', '后台启动器'],
+    ['打开系统.vbs', '一键打开（桌面图标的落点）'],
+    ['app.ico', '应用图标'],
     ['启动系统.bat', '手动启动'],
     ['停止服务.bat', '停止服务'],
     ['卸载.exe', '卸载程序'],
@@ -147,12 +168,41 @@ async function forceRmDir (dir, tries = 8) {
 
   // ---------- 3. 快捷方式 / 自启 / 注册表 ----------
   console.log('\n[3] 快捷方式、开机自启、卸载入口');
-  ok('桌面快捷方式', fs.existsSync(path.join(DESKTOP, '弱电项目管理系统.lnk')));
-  ok('桌面打开入口', fs.existsSync(path.join(DESKTOP, '弱电项目管理系统（打开）.url')));
+  const deskLnk = path.join(DESKTOP, '弱电项目管理系统.lnk');
+  ok('桌面快捷方式', fs.existsSync(deskLnk));
+  if (fs.existsSync(deskLnk)) {
+    const di = lnkInfo(deskLnk);
+    // ★ 这条是「桌面图标点了没反应」的回归测试：
+    // 老版本桌面图标指向「后台启动.vbs」—— 只起服务、不开浏览器，
+    // 用户双击后屏幕毫无变化，以为程序坏了。
+    ok('桌面图标指向「打开系统.vbs」（起服务并自动开浏览器）',
+      /打开系统\.vbs/i.test(di.args), di.args || '(空)');
+    ok('桌面图标用的是应用图标（不是 node 的绿色小恐龙）',
+      /app\.ico/i.test(di.icon), di.icon || '(默认)');
+  }
+  // 桌面上留两个图标（一个起服务一个开网页）是上一版的设计，用户分不清点哪个
+  ok('桌面上多余的「（打开）.url」已清掉',
+    !fs.existsSync(path.join(DESKTOP, '弱电项目管理系统（打开）.url')));
   ok('开始菜单目录', fs.existsSync(SM_DIR));
+  ok('开始菜单「打开系统」', fs.existsSync(path.join(SM_DIR, '打开系统.lnk')));
   ok('开始菜单「停止服务」', fs.existsSync(path.join(SM_DIR, '停止服务.lnk')));
+
+  // ★ 这条是「开始菜单里的卸载点了没反应」的回归测试：
+  // 老版本在复制「卸载.exe」之前就建了快捷方式，首次安装必然指向空路径。
+  const unLnk = path.join(SM_DIR, '卸载.lnk');
+  ok('开始菜单「卸载」', fs.existsSync(unLnk));
+  if (fs.existsSync(unLnk)) {
+    const ui = lnkInfo(unLnk);
+    ok('「卸载」指向真实存在的卸载.exe', !!ui.target && fs.existsSync(ui.target),
+      ui.target || '(空路径)');
+  }
+
   ok('开机自启已设置', fs.existsSync(path.join(STARTUP, '弱电项目管理系统.lnk')));
   ok('已注册到「应用和功能」', regExists());
+  // 版本号曾经写死成 2.0.0，「应用和功能」里永远是错版本，报障时对不上号
+  const pkgVer = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+  ok('「应用和功能」显示的版本号与 package.json 一致', regValue('DisplayVersion') === pkgVer,
+    `注册表 ${regValue('DisplayVersion') || '(空)'} / package.json ${pkgVer}`);
 
   // ---------- 4. 启动服务 ----------
   console.log('\n[4] 启动服务并验证功能');
@@ -237,6 +287,25 @@ async function forceRmDir (dir, tries = 8) {
     } catch (e) { ok('装机包里的识别引擎可用', false, e.message.slice(0, 50)) }
   }
 
+  // ---------- 4.5 一键启动器 ----------
+  console.log('\n[4.5] 桌面图标的落点（打开系统.vbs）');
+  const vbsPath = path.join(DIR, '打开系统.vbs');
+  if (fs.existsSync(vbsPath)) {
+    // 先把本目录的 node 全停掉，模拟「服务没在跑，用户双击桌面图标」
+    killInstalled();
+    await sleep(1500);
+    // /no-browser：只验证「能起服务」，不在测试机上乱弹浏览器窗口。
+    // 这一步能抓住 VBS 语法错误、WMI 查询写错、路径拼错这类只能靠人眼发现的问题。
+    const vr = spawnSync('wscript.exe', ['//nologo', vbsPath, '/no-browser'],
+      { timeout: 120000, windowsHide: true, encoding: 'utf8' });
+    ok('「打开系统.vbs」能跑通（语法 + 端口探测 + 启动服务）', vr.status === 0,
+      `exit=${vr.status}${vr.stderr ? ' ' + String(vr.stderr).slice(0, 120) : ''}`);
+    killInstalled();
+    await sleep(1200);
+  } else {
+    ok('「打开系统.vbs」存在', false, '文件缺失');
+  }
+
   // ---------- 5. 停止 ----------
   console.log('\n[5] 停止服务');
   child.kill('SIGKILL');
@@ -268,6 +337,11 @@ async function forceRmDir (dir, tries = 8) {
   ok('程序文件已删除（node.exe）', !fs.existsSync(path.join(DIR, 'node.exe')));
   ok('app 目录已删除', !fs.existsSync(path.join(DIR, 'app')));
   ok('启动器已删除', !fs.existsSync(path.join(DIR, '后台启动.vbs')));
+  ok('一键启动器已删除', !fs.existsSync(path.join(DIR, '打开系统.vbs')));
+  // 卸载前会自动把库另存一份到 backup 里 —— data 目录虽然保留，
+  // 但用户卸载后常常顺手把整个目录删掉，backup 里那份是最后的保险
+  ok('卸载前已自动备份数据库', fs.existsSync(path.join(DIR, 'backup', '卸载前自动备份')),
+    path.join('backup', '卸载前自动备份'));
   ok('data 目录已保留', fs.existsSync(path.join(DIR, 'data')));
   const dbAfter = fs.existsSync(path.join(DIR, 'data', 'pms.db'))
     ? fs.statSync(path.join(DIR, 'data', 'pms.db')).size : 0;
