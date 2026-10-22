@@ -25,10 +25,19 @@ const PORT = Number(process.env.PMS_VERIFY_PORT || 18791);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const results = [];
+let skipped = 0;
 function T (name, ok, extra = '') {
   results.push({ name, ok });
   console.log(`  ${ok ? '✓' : '✗'} ${name}${extra ? '  — ' + extra : ''}`);
   return ok;
+}
+/**
+ * 跳过：本机能力不具备（比如安全策略禁了 wscript.exe），不是产品的问题。
+ * 计成「未执行」而不是「通过」—— 跳过的项不能算绿。
+ */
+function S (name, why) {
+  skipped++;
+  console.log(`  ⊘ ${name}  — 跳过：${why}`);
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -40,6 +49,21 @@ const STARTUP = path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roa
   'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
 const SM_DIR = path.join(STARTMENU, '弱电项目管理系统');
 const REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ELV-PMS';
+
+/**
+ * 本机能不能启动某个 WSH 宿主。
+ *
+ * 受管环境里 wscript / cscript 常被安全策略禁止。实测的表现是**进程不退出、
+ * 被挂住**，要等满 spawnSync 的超时才返回 —— 直接拿真脚本去试，
+ * 光这一项就要白等两分钟。先用一个立刻退出的空脚本探一下，5 秒出结论。
+ */
+function wshUsable (host) {
+  const probe = path.join(os.tmpdir(), 'elv-wsh-probe.vbs');
+  try { fs.writeFileSync(probe, 'WScript.Quit 0\r\n') } catch { return false }
+  const r = spawnSync(host, ['//nologo', probe], { timeout: 5000, windowsHide: true });
+  try { fs.rmSync(probe, { force: true }) } catch { /* 忽略 */ }
+  return !r.error && r.status === 0;
+}
 
 /** 跑安装程序，返回退出码（GUI 程序也能拿到） */
 function runSetup (args) {
@@ -53,9 +77,9 @@ function runSetupAt (exe, args) {
   return { code: r.status, out: (r.stderr || '') + (r.stdout || '') };
 }
 
+/** 卸载注册项在不在。同 regValue 的理由：不依赖 reg.exe。 */
 function regExists () {
-  const r = spawnSync('reg.exe', ['query', REG_KEY], { encoding: 'utf8' });
-  return r.status === 0;
+  return regValue('DisplayName') !== '';
 }
 
 /** 跑一段 PowerShell 并拿回 stdout（wmic 在新版 Windows 已废弃，不能用） */
@@ -72,7 +96,13 @@ function killInstalled () {
 
 /** 读快捷方式的目标 / 参数 / 图标。用 WScript.Shell 解析，比直接啃 .lnk 二进制稳 */
 function lnkInfo (lnk) {
-  const script = `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk}'); "$($s.TargetPath)|$($s.Arguments)|$($s.IconLocation)"`;
+  // ⚠️ 必须先把 PowerShell 的输出编码设成 UTF-8。
+  // 5.1 往管道写东西时用的是系统 OEM 代码页（中文是 GBK），Node 按 utf8 解码
+  // 就会得到「��ϵͳ.vbs」这种乱码 —— 于是所有「快捷方式指向对不对」的断言
+  // 全部误报成红，而且看不出是编码问题（值看着像一串问号）。
+  const script = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;'
+    + `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk}');`
+    + '"$($s.TargetPath)|$($s.Arguments)|$($s.IconLocation)"';
   const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
     { encoding: 'utf8', timeout: 30000, windowsHide: true });
   const out = (r.stdout || '').trim();
@@ -80,13 +110,20 @@ function lnkInfo (lnk) {
   return { target: target.trim(), args: args.trim(), icon: icon.trim() };
 }
 
-/** 读注册表里某个值（卸载项用于展示版本号） */
+/**
+ * 读注册表里某个值（卸载项用于展示版本号）。
+ *
+ * ⚠️ 走 PowerShell 的 Get-ItemProperty，不用 reg.exe。
+ * reg.exe 在很多受管环境里被安全策略禁止启动（本机就是），一旦被拦，
+ * 所有跟注册表有关的断言都会报成「产品没写注册表」—— 是假红。
+ */
 function regValue (name) {
-  const r = spawnSync('reg.exe', ['query', REG_KEY, '/v', name], { encoding: 'utf8' });
-  const line = (r.stdout || '').split('\n').find(l => l.includes(name));
-  if (!line) return '';
-  const parts = line.trim().split(/\s{2,}/);
-  return (parts[parts.length - 1] || '').trim();
+  const psKey = REG_KEY.replace(/^HKCU\\/, 'HKCU:\\');
+  const script = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;'
+    + `try { (Get-ItemProperty -Path '${psKey}' -Name '${name}' -ErrorAction Stop).${name} } catch { '' }`;
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    { encoding: 'utf8', timeout: 30000, windowsHide: true });
+  return (r.stdout || '').trim();
 }
 
 /** 删目录，带重试：刚杀完进程时文件句柄还没释放会 EBUSY */
@@ -165,6 +202,37 @@ async function forceRmDir (dir, tries = 8) {
     ? fs.readdirSync(path.join(DIR, 'app/public'), { recursive: true }).length : 0;
   ok('前端产物齐全', pubN >= 5, `${pubN} 项`);
   ok('data / backup 目录已建', fs.existsSync(path.join(DIR, 'data')) && fs.existsSync(path.join(DIR, 'backup')));
+
+  // ---------- 2.5 VBS 静态检查 ----------
+  //
+  // 「名称重定义」（800A0411）这种 VBScript 编译错误，最坑的地方是它只在
+  // **双击图标时**弹个窗，安装、文件结构、HTTP 探活全都正常 ——
+  // 本机沙箱禁 wscript 时装机验证也碰不到它（真实发生过：用户截图报错，
+  // 追到模板里两个函数各写了一个 `Dim wmi`）。
+  // VBScript 没有函数级作用域，所有 Dim 都注册在全局，所以跨函数重名就是编译错。
+  // 这条静态检查不需要真的执行脚本，任何环境都能跑。
+  const openVbsPath = path.join(DIR, '打开系统.vbs');
+  if (fs.existsSync(openVbsPath)) {
+    const vbsSrc = fs.readFileSync(openVbsPath, 'utf8');
+    const dims = [...vbsSrc.matchAll(/^\s*Dim\s+(.+)$/gim)]
+      .flatMap(m => m[1].split(','))
+      .map(x => x.trim().split(/\s+/)[0].toLowerCase())
+      .filter(Boolean);
+    const dup = [...new Set(dims.filter((x, i) => dims.indexOf(x) !== i))];
+    T('「打开系统.vbs」变量没有重名（800A0411 弹窗的根源）', dup.length === 0,
+      dup.length ? '重名：' + dup.join(', ') : `${dims.length} 个变量全部唯一`);
+    const funcs = [...vbsSrc.matchAll(/^\s*(?:Function|Sub)\s+(\w+)/gim)].map(m => m[1].toLowerCase());
+    const fdup = [...new Set(funcs.filter((x, i) => funcs.indexOf(x) !== i))];
+    T('「打开系统.vbs」过程没有重名', fdup.length === 0, fdup.join(', ') || `${funcs.length} 个过程全部唯一`);
+    // 过程名跟变量名撞上同样报「名称重定义」—— VBScript 大小写不敏感，
+    // 顶层 Dim oursRunning 和 Function OursRunning() 就是同一个名字（真实踩过）。
+    const collide = [...new Set(funcs.filter(f => dims.includes(f)))];
+    T('「打开系统.vbs」过程名与变量名不冲突', collide.length === 0,
+      collide.length ? '冲突：' + collide.join(', ') : '');
+    // 占位符必须全部替换掉，漏一个 @PORT@ 就是运行时才炸
+    T('「打开系统.vbs」占位符已全部替换', !/@\w+@/.test(vbsSrc),
+      (/@\w+@/.exec(vbsSrc) || [''])[0]);
+  }
 
   // ---------- 3. 快捷方式 / 自启 / 注册表 ----------
   console.log('\n[3] 快捷方式、开机自启、卸载入口');
@@ -296,10 +364,23 @@ async function forceRmDir (dir, tries = 8) {
     await sleep(1500);
     // /no-browser：只验证「能起服务」，不在测试机上乱弹浏览器窗口。
     // 这一步能抓住 VBS 语法错误、WMI 查询写错、路径拼错这类只能靠人眼发现的问题。
-    const vr = spawnSync('wscript.exe', ['//nologo', vbsPath, '/no-browser'],
-      { timeout: 120000, windowsHide: true, encoding: 'utf8' });
-    ok('「打开系统.vbs」能跑通（语法 + 端口探测 + 启动服务）', vr.status === 0,
-      `exit=${vr.status}${vr.stderr ? ' ' + String(vr.stderr).slice(0, 120) : ''}`);
+    // 用 cscript（控制台宿主）而不是 wscript：
+    //   cscript 的语法错误走 stderr + 退出码，能被自动化读到；
+    //   wscript 的语法错误是一个**弹窗**，进程挂住等人点确定，120 秒超时后
+    //   exit=null，既看不到错误信息，还把验证拖慢两分钟。
+    // 双击图标用的是 wscript，但两者跑的是同一个脚本引擎，语法错误一样会报。
+    const host = 'cscript.exe';
+    if (!wshUsable(host)) {
+      // 受管环境里 WSH 宿主常被安全策略禁止启动。这不是产品的问题，
+      // 但也不能记成通过 —— 明确标成「未执行」，并让汇总里能看见。
+      S('「打开系统.vbs」能跑通（语法 + 端口探测 + 启动服务）',
+        '本机禁止运行 cscript.exe；这条留给 CI（windows-latest 没有这条黑名单）');
+    } else {
+      const vr = spawnSync(host, ['//nologo', vbsPath, '/no-browser'],
+        { timeout: 120000, windowsHide: true, encoding: 'utf8' });
+      ok('「打开系统.vbs」能跑通（语法 + 端口探测 + 启动服务）', vr.status === 0,
+        `exit=${vr.status}${vr.stderr ? ' ' + String(vr.stderr).trim().slice(0, 200) : ''}${vr.stdout ? ' ' + String(vr.stdout).trim().slice(0, 120) : ''}`);
+    }
     killInstalled();
     await sleep(1200);
   } else {
@@ -353,9 +434,10 @@ async function forceRmDir (dir, tries = 8) {
 
   // ---------- 收尾 ----------
   console.log('\n' + '='.repeat(56));
-  if (all) console.log('  ══ 全部通过 ══');
-  else console.log(`  ══ ${results.filter(r => !r.ok).length} 项失败 ══`);
+  if (all && !skipped) console.log('  ══ 全部通过 ══');
+  else if (all) console.log(`  ══ 通过的项都绿了，但有 ${skipped} 项未执行（见上方 ⊘）══`);
+  else console.log(`  ══ ${results.filter(r => !r.ok).length} 项失败${skipped ? `，${skipped} 项未执行` : ''} ══`);
   console.log(`  数据目录保留在：${path.join(DIR, 'data')}`);
   try { fs.rmSync(SETUP, { force: true }) } catch { /* 忽略 */ }
-  process.exit(all ? 0 : 1);
+  process.exit(all && !skipped ? 0 : 1);
 })().catch(e => { console.error('\n  ✗ 验证失败：' + e.message); process.exit(1); });

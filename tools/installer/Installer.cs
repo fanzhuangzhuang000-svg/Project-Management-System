@@ -95,7 +95,7 @@ End If
 If Not fso.FolderExists(dataPath) Then fso.CreateFolder dataPath
 
 portLive    = PortListening(@PORT@)
-oursRunning = OursRunning()
+oursRunning = IsOursRunning()
 
 If (Not portLive) And (Not oursRunning) Then
   sh.Popup ""正在启动服务，请稍候…"", 2, TITLE, 64
@@ -109,7 +109,7 @@ If (Not portLive) And (Not oursRunning) Then
   portLive = WaitPort(@PORT@, 30)
 
   If Not portLive Then
-    If OursRunning() Then
+    If IsOursRunning() Then
       MsgBox ""服务进程起来了，但端口 @PORT@ 一直没监听上。"" & vbCrLf & vbCrLf & _
              ""多半是被别的程序占用了，或者防火墙 / 杀毒软件拦了 node.exe。"" & vbCrLf & vbCrLf & _
              ""日志："" & dataPath & ""\startup.log"", 48, TITLE
@@ -140,13 +140,17 @@ WScript.Quit 0
 ' ---------- 探测 ----------
 
 ' 端口是否处于监听状态（MSFT_NetTCPConnection.State = 2 即 Listen）
+' ⚠️ VBScript 没有函数级作用域：所有 Dim 都注册在全局。
+' 两个函数里各写一个 `Dim wmi` 就是 800A0411「名称重定义」——
+' 双击桌面图标只会弹出编译错误框，服务根本起不来（真实发生过）。
+' 所以每个函数的局部变量名都要全局唯一，跨函数不重名。
 Function PortListening(p)
-  Dim wmi, rows
+  Dim wmiTcp, rows
   PortListening = False
   On Error Resume Next
-  Set wmi = GetObject(q & ""winmgmts:\\.\root\StandardCimv2"" & q)
+  Set wmiTcp = GetObject(q & ""winmgmts:\\.\root\StandardCimv2"" & q)
   If Err.Number <> 0 Then Err.Clear : Exit Function
-  Set rows = wmi.ExecQuery(q & ""select LocalPort from MSFT_NetTCPConnection where LocalPort="" & p & "" and State=2"" & q)
+  Set rows = wmiTcp.ExecQuery(q & ""select LocalPort from MSFT_NetTCPConnection where LocalPort="" & p & "" and State=2"" & q)
   If Err.Number <> 0 Then Err.Clear : Exit Function
   If Not (rows Is Nothing) Then
     If rows.Count > 0 Then PortListening = True
@@ -171,14 +175,14 @@ End Function
 ' 本安装目录下是否有 node 在跑。
 ' 默认返回 True（放行）：WMI 查不动时宁可多开一个浏览器，
 ' 也不能凭空把用户拦住说「你的服务没起来」。
-Function OursRunning()
-  Dim wmi, procs, proc, exe, cmdline, target
-  OursRunning = True
+Function IsOursRunning()
+  Dim wmiProc, procs, proc, exe, cmdline, target
+  IsOursRunning = True
   target = LCase(appDir)
   On Error Resume Next
-  Set wmi = GetObject(q & ""winmgmts:\\.\root\cimv2"" & q)
+  Set wmiProc = GetObject(q & ""winmgmts:\\.\root\cimv2"" & q)
   If Err.Number <> 0 Then Err.Clear : Exit Function
-  Set procs = wmi.ExecQuery(q & ""select ExecutablePath, CommandLine from Win32_Process where Name='node.exe'"" & q)
+  Set procs = wmiProc.ExecQuery(q & ""select ExecutablePath, CommandLine from Win32_Process where Name='node.exe'"" & q)
   If Err.Number <> 0 Or procs Is Nothing Then Err.Clear : Exit Function
   For Each proc In procs
     exe = vbNullString
@@ -190,7 +194,7 @@ Function OursRunning()
       Exit Function
     End If
   Next
-  OursRunning = False
+  IsOursRunning = False
   Err.Clear
   On Error GoTo 0
 End Function
