@@ -90,41 +90,19 @@ function copyDir (from, to) {
     if (e.isDirectory()) copyDir(s, d); else fs.copyFileSync(s, d);
   }
 }
-/** tar 能不能设置权限位：GNU tar 有 --mode，Windows 自带的 bsdtar 没有 */
-function tarIsGnu () {
-  const r = spawnSync('tar', ['--version'], { encoding: 'utf8', windowsHide: true });
-  return /GNU tar/i.test(r.stdout || '');
-}
-
 /**
- * 打 tar.gz。
+ * Linux 包用 tools/tar-write.js 自己写，不再调外部 tar。
  *
- * deploy.sh 必须带执行位，客户才能 ./deploy/deploy.sh 直接跑。
- * 但 Windows 自带的是 **bsdtar**（libarchive），既不支持 --mode 也不支持
- * --transform —— 实测直接报 "Option --mode=755 is not supported"。
- * 而且 Windows 上 fs.chmod 本身是空操作，打出来的条目一律 666。
- *
- * 所以分两种情况：
- *   · GNU tar（本机装了 Git for Windows 的 GNU tar、或 CI 的 ubuntu）→ 用 --mode 设成 755
- *   · bsdtar → 设不了，改由包内说明引导用 `bash deploy/deploy.sh`（不依赖执行位）
+ * 这里交代一下为什么把原来那段 spawnSync('tar'…) 删了：
+ *   Windows 上有两个 tar（Git 的 GNU tar、System32 的 bsdtar），PATH 里谁在前
+ *   看机器。本机是 GNU，CI 的 runner 是 bsdtar，于是同一份脚本本地绿、CI 红；
+ *   而 CI 那次的报错只有「✗ 打包失败：tar 失败：」—— stderr 为空、没有退出码。
+ *   为了能复现，一度加了 PMS_TAR 环境变量指定 tar，本地用 bsdtar 跑却又能通过，
+ *   说明差异还在更细的地方。既然如此，就不该继续和外部工具的行为差异搏斗：
+ *   自己写 uStar 是确定的，而且能精确控制执行位
+ *   （Windows 上 fs.chmod 是空操作、bsdtar 又不认 --mode，以前只能往包里塞说明文件）。
  */
-function tarGz (cwd, entry, out) {
-  const gnu = tarIsGnu();
-  // ⚠️ 输出路径必须换成**相对 cwd** 的写法。Windows 上 out 长这样：
-  //    C:\...\dist-artifacts\elv-pms-1.1.1-linux.tar.gz
-  //    GNU tar 会把开头的 `C:` 当成远程主机，报
-  //    "tar (child): Cannot connect to C: resolve failed"。
-  //    --force-local 只有 GNU tar 认、bsdtar 不认，所以统一用相对路径，
-  //    两种 tar 都吃（cwd 和 out 都在 dist-artifacts 下，不会跨盘）。
-  const relOut = path.relative(cwd, out).split(path.sep).join('/');
-  const args = ['-czf', relOut];
-  if (gnu) args.push('--mode=u+rw,go+r,go-w', '--owner=0', '--group=0', '--numeric-owner');
-  args.push(entry);
-  const r = spawnSync('tar', args, { cwd, encoding: 'utf8', windowsHide: true });
-  if (r.status !== 0) throw new Error('tar 失败：' + (r.stderr || '').slice(0, 200));
-  if (!gnu) say('');
-  return gnu;
-}
+const { writeTarGz } = require('./tar-write.js');
 
 function zip (cwd, entry, out) {
   execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
@@ -222,21 +200,14 @@ function buildLinux () {
   if (exists('docker-compose.yml')) copyFile('docker-compose.yml', path.join(stage, 'docker-compose.yml'));
   if (exists('.env.example')) copyFile('.env.example', path.join(stage, '.env.example'));
 
-  // bsdtar 设不了执行位时，先把运行说明写进包里再打包（顺序不能反，
-  // 写完再 tar 才会被收进去）。
-  if (!tarIsGnu()) {
-    write(path.join(stage, 'deploy', '怎么运行.txt'),
-      '本包在 Windows 上打包，解压后 deploy.sh 可能没有执行权限。\n\n' +
-      '两种方式任选其一：\n' +
-      '  1) sudo bash deploy/deploy.sh        ← 不需要执行权限，推荐\n' +
-      '  2) chmod +x deploy/deploy.sh && sudo ./deploy/deploy.sh\n');
-    say('本机 tar 是 bsdtar，设不了执行位 —— 包内已附运行说明');
-  }
-
   const out = path.join(OUT, name);
   rmrf(out);
-  tarGz(path.join(OUT, '_stage'), dir, out);
-  say(`${name}  ${mb(fs.statSync(out).size)}`);
+  // 自己写 tar.gz，不调外部 tar —— 原因见 tools/tar-write.js 顶部
+  // （Windows 上 GNU tar / bsdtar 行为不同，CI 与本机结论相反，且报错是空的）。
+  // 顺带解决了执行位：Windows 上 fs.chmod 是空操作、bsdtar 又不认 --mode，
+  // 所以以前只能往包里塞一份「怎么运行.txt」。现在 deploy.sh 直接 755。
+  const made = writeTarGz(path.join(OUT, '_stage'), dir, out);
+  say(`${name}  ${mb(fs.statSync(out).size)}  （${made.files} 个文件）`);
   return name;
 }
 

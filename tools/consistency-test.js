@@ -419,6 +419,42 @@ check('回收站统计带 bytes（占用空间不会算出 NaN）',
     .every(f => fs.existsSync(path.join(ROOTDIR, f))));
 }
 
+// ---------------------------------------------------------------- 交付包的 tar
+// Linux 包改由 tools/tar-write.js 自己写（不再 spawn 外部 tar，原因见该文件）。
+// 自己写的好处是确定的：同一份代码在哪台机器上都产出同样的包，执行位也能精确控制。
+// 坏处是"格式写错了也没人管" —— 所以这里拿系统 tar 把包读回来验一遍。
+{
+  const { writeTarGz } = require('./tar-write.js');
+  const { spawnSync } = require('node:child_process');
+  const work = path.join(TMP, 'tarwork');
+  const entry = 'pkg-1.0';
+  fs.mkdirSync(path.join(work, entry, 'deploy'), { recursive: true });
+  fs.writeFileSync(path.join(work, entry, 'deploy', 'deploy.sh'), '#!/bin/bash\necho hi\n');
+  fs.writeFileSync(path.join(work, entry, 'server.js'), '// 后端入口\n');
+  fs.writeFileSync(path.join(work, entry, '怎么运行.txt'), '中文文件名\n');
+
+  const out = path.join(work, 'pkg.tar.gz');
+  let made = null, err = '';
+  try { made = writeTarGz(work, entry, out) } catch (e) { err = e.message }
+  check('内置 tar 能写出包', !!made && fs.existsSync(out), err || (made ? `${made.files} 个文件` : ''));
+
+  // 用系统 tar 读回：cwd + 相对文件名，避免 Windows 上 tar 把 C: 当远程主机
+  const list = spawnSync('tar', ['-tzf', 'pkg.tar.gz'], { cwd: work, encoding: 'utf8', windowsHide: true });
+  if (list.error || list.status !== 0) {
+    skipCheck('内置 tar 的包能被系统 tar 读出', '本机没有可用的 tar（' + ((list.error && list.error.message) || list.stderr || '').slice(0, 60) + '）');
+  } else {
+    const names = list.stdout.split('\n').filter(Boolean);
+    check('内置 tar 的包能被系统 tar 读出', names.length > 0, names.length + ' 个条目');
+    check('中文文件名没被写坏', names.some(n => n.includes('怎么运行.txt')),
+      names.filter(n => /txt$/.test(n)).join(', '));
+    const tv = spawnSync('tar', ['-tvzf', 'pkg.tar.gz'], { cwd: work, encoding: 'utf8', windowsHide: true });
+    const shLine = (tv.stdout || '').split('\n').find(l => l.includes('deploy.sh')) || '';
+    check('deploy.sh 带执行位（客户能 ./deploy.sh 直接跑）', /^-rwxr-xr-x/.test(shLine.trim()), shLine.trim());
+    const jsLine = (tv.stdout || '').split('\n').find(l => l.endsWith('server.js')) || '';
+    check('普通文件不带执行位', /^-rw-r--r--/.test(jsLine.trim()), jsLine.trim());
+  }
+}
+
 // ================================================================
 const badRows = results.filter(r => !r.ok);
 console.log(`\n${results.length - badRows.length} / ${results.length} 项通过${skipped ? `（另跳过 ${skipped} 条）` : ''}`);
