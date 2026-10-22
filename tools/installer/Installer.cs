@@ -323,8 +323,24 @@ End Function
             // 失败就如实报（原因带异常类型和消息）。
             // 验证脚本靠这一行区分「这台机器建不出快捷方式」和「安装器压根没建」——
             // 前者是环境（CI runner、无桌面外壳的精简系统），后者是回归。
-            if (shortcutFails.Count > 0 && log != null)
-                log("[快捷方式失败] " + shortcutFails.Count + " 个：" + string.Join(" | ", shortcutFails.ToArray()));
+            if (shortcutFails.Count > 0)
+            {
+                string detail = string.Join("\r\n  ", shortcutFails.ToArray());
+                if (log != null) log("[快捷方式失败] " + shortcutFails.Count + " 个：" + detail.Replace("\r\n", " | "));
+                // 同时落一份文件：静默安装时控制台输出未必抓得到 —— GUI 子系统的程序
+                // 在没有控制台的会话（CI runner 以服务身份跑）里写 stderr 会丢。
+                // 文件是可靠的，用户也看得见（就放在安装目录，卸载时一起删）。
+                try
+                {
+                    File.WriteAllText(Path.Combine(installDir, "安装诊断.txt"),
+                        "以下快捷方式没能创建（" + shortcutFails.Count + " 个）：\r\n  " + detail
+                        + "\r\n\r\n程序本身不受影响：双击安装目录里的「启动系统.bat」即可正常使用。\r\n"
+                        + "常见原因：这台机器没有可用的桌面外壳（远程/服务会话、精简系统），"
+                        + "或安全策略禁止了 WScript.Shell 创建快捷方式。\r\n",
+                        new UTF8Encoding(false));
+                }
+                catch { /* 诊断文件写不出来不影响安装 */ }
+            }
             if (log != null) log("正在注册卸载信息…");
             RegisterUninstall();
             if (!noAutostart)

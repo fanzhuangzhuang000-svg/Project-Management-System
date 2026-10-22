@@ -20,12 +20,41 @@ function open (opts = {}) {
 
   // 这些 PRAGMA 是 SQLite 专属的连接设置，放在适配器里，
   // 业务层就不用关心「换个数据库要不要改这几行」。
-  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA busy_timeout = 8000;');
   // 数据量很小（几 MB），用 FULL 换取掉电/强杀也不丢数据
   db.exec('PRAGMA synchronous = FULL;');
-  // 允许别的连接（备份脚本、另一个实例）等待锁，而不是直接 SQLITE_BUSY
-  db.exec('PRAGMA busy_timeout = 8000;');
   db.exec('PRAGMA foreign_keys = ON;');
+
+  /**
+   * 切 WAL：**失败了不能让它把服务拖死**。
+   *
+   * ⚠️ 这里踩过两次，都记下来：
+   *  1) busy_timeout 原来写在 journal_mode 之后 —— 注释还写着"允许别的连接等待锁"，
+   *     等于把超时设在了出事之后，形同虚设。
+   *  2) 把它挪到前面**也没用**：SQLite 的 PRAGMA journal_mode 在拿不到锁时
+   *     是立即返回 SQLITE_BUSY 的，不走 busy handler（实测：非 WAL 库上另一个
+   *     进程 BEGIN IMMEDIATE，这边仍然秒抛 database is locked）。
+   *
+   * 而"另一个进程正握着库"是**正常场景**，不是故障：
+   *   · 开机自启的服务还在初始化，用户又双击了一次图标
+   *   · 覆盖安装刚杀掉旧进程，句柄还没释放
+   *   · 备份脚本正在读
+   * 所以：先重试几次（通常几十毫秒内锁就没了），仍然不行就**降级**继续 ——
+   * WAL 只是并发优化，用默认的 rollback journal 一样能正常读写。
+   * 以前这里直接抛到顶层，用户看到的就是"双击图标，窗口闪一下就没了"。
+   * （CI 的覆盖安装验证抓到的就是这一行：adapter-sqlite.js:23 database is locked）
+   */
+  let walOk = false;
+  for (let i = 0; i < 10 && !walOk; i++) {
+    try { db.exec('PRAGMA journal_mode = WAL;'); walOk = true; }
+    catch (e) {
+      if (!/locked|busy/i.test(String(e && e.message))) throw e;   // 别的原因照抛
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200) } catch { /* 忽略 */ }
+    }
+  }
+  if (!walOk) {
+    console.warn('[SQLite] 数据库被其他进程占用，本次以默认日志模式启动（功能不受影响，并发写入会稍慢）');
+  }
 
   return {
     dialect: DIALECT,

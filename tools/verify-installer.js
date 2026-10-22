@@ -246,20 +246,38 @@ async function forceRmDir (dir, tries = 8) {
   /**
    * 这台机器建不出 .lnk 时，不该判产品有错 —— 但也绝不能悄悄放过。
    *
-   * 判据用**安装器自己的报告**，不是猜环境：
-   *   · 安装器在 MakeShortcut 失败时会输出 `[快捷方式失败] N 个：原因`
-   *     （以前那里是个空的 catch{}，装完桌面没图标、日志里什么都没有）
-   *   · 只有当"它报了失败"且"5 个 lnk 一个都没有"时才跳过
-   *   · 反过来：它没报失败却没建出来 → 说明 CreateShortcuts 压根没被调用，那是回归，必须红
+   * 两个判据，任一成立才算「环境不具备」：
+   *   ① 安装器自己写了「安装诊断.txt」（它在 MakeShortcut 失败时落一份文件）
+   *      —— 不用控制台输出，因为 GUI 子系统的程序在无控制台的会话里写 stderr 会丢，
+   *         CI 上实测整个 `[安装]` 输出一行都抓不到。
+   *   ② 本机连一个空白 .lnk 都建不出来（COM 探测，与产品逻辑无关）
    *
-   * CI 的 windows runner 就是第一种：没有可用的桌面外壳，
-   * WScript.Shell 的 CreateShortcut 抛异常，而程序本身完全正常。
+   * 而且必须「5 个 lnk 一个都没建出来」才算跳过：
+   *   若建出来一部分，说明能力是有的，缺的那个就是回归，照红。
    */
-  const lnkFail = /\[快捷方式失败\][^\n]*/.exec(inst.out || '');
-  if (lnkFail && madeLnks.length === 0) {
+  const diagFile = path.join(DIR, '安装诊断.txt');
+  const diag = fs.existsSync(diagFile) ? fs.readFileSync(diagFile, 'utf8') : '';
+  const installerSaysFail = /快捷方式没能创建|\[快捷方式失败\]/.test(diag);
+
+  const lnkCapable = (() => {
+    if (installerSaysFail) return false;
+    const probe = path.join(os.tmpdir(), 'elv-lnkcap-' + process.pid + '.lnk');
+    const cmd = process.env.SystemRoot || 'C:\\Windows';
+    const ps = "$s=New-Object -ComObject WScript.Shell;"
+      + "$l=$s.CreateShortcut('" + probe.replace(/'/g, "''") + "');"
+      + "$l.TargetPath='" + path.join(cmd, 'System32', 'cmd.exe') + "';"
+      + "$l.Save(); if (Test-Path '" + probe.replace(/'/g, "''") + "') { exit 0 } else { exit 1 }";
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { timeout: 20000, windowsHide: true });
+    try { fs.rmSync(probe, { force: true }); } catch { /* 忽略 */ }
+    return !r.error && r.status === 0;
+  })();
+
+  if (!lnkCapable && madeLnks.length === 0) {
     S('桌面 / 开始菜单 / 开机自启快捷方式',
-      '安装器报告建不出来（' + lnkFail[0].slice(0, 160) + '）—— 这台机器没有可用的桌面外壳。'
-      + '程序本身正常，用户可以双击安装目录里的「启动系统.bat」');
+      '这台机器建不出 .lnk（' + (installerSaysFail ? '安装器已记录：' + diag.split('\n').slice(0, 2).join(' ').trim().slice(0, 140)
+        : '本机 COM 探测失败，没有可用的桌面外壳')
+      + '）。程序本身正常，双击安装目录里的「启动系统.bat」即可使用');
   } else {
     ok('桌面快捷方式', fs.existsSync(deskLnk));
     if (fs.existsSync(deskLnk)) {

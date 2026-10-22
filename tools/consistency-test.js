@@ -460,6 +460,32 @@ check('回收站统计带 bytes（占用空间不会算出 NaN）',
   else check('系统 tar 也能读这个包', ext.status === 0, (ext.stderr || '').slice(0, 80));
 }
 
+// ---------------------------------------------------------------- 启动时库被锁
+// 真实故障（CI 的覆盖安装验证暴露的）：另一个进程正握着库时，新进程一开库就
+// `Error: database is locked` 直接退出 —— 用户看到的是"双击图标，窗口闪一下就没了"。
+// 而"另一个进程握着库"是正常场景：开机自启与手动双击撞车、覆盖安装刚杀掉旧进程、
+// 备份脚本正在读、上一个进程还在释放句柄。
+{
+  const { DatabaseSync } = require('node:sqlite');
+  const lockFile = path.join(TMP, 'lockdir', 'pms.db');
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  const holder = new DatabaseSync(lockFile);
+  holder.exec('CREATE TABLE IF NOT EXISTS t (x)');
+  holder.exec('BEGIN IMMEDIATE;');           // 真正持住写锁
+  let started = false, why = '';
+  const t0 = Date.now();
+  try {
+    const h = require('../adapter-sqlite.js').open({ file: lockFile });
+    started = true;
+    h.close();
+  } catch (e) { why = e.message }
+  const ms = Date.now() - t0;
+  holder.exec('ROLLBACK');
+  holder.close();
+  check('库被别的连接锁住时启动不会崩（重试后降级为默认日志模式）',
+    started, why ? `${why}（等了 ${ms}ms）` : `等了 ${ms}ms 后起来了`);
+}
+
 // ================================================================
 const badRows = results.filter(r => !r.ok);
 console.log(`\n${results.length - badRows.length} / ${results.length} 项通过${skipped ? `（另跳过 ${skipped} 条）` : ''}`);
