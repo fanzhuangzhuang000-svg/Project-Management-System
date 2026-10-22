@@ -1911,6 +1911,15 @@ function generatePlan (contractId, opts = {}) {
 
   db.exec('BEGIN');
   try {
+    // ⚠️ 事务里再查一次。上面那次判断只在"单进程顺序执行"下成立；
+    //    专业版（compose）可能是多副本连同一个 PG，两个副本同时点「生成」时
+    //    会各自看到 0 个节点，然后各插一套 —— 同一个合同出现两份计划、
+    //    回款计划金额翻倍。查和写放进同一个事务里，至少让窗口小到可以接受。
+    const stillEmpty = db.prepare('SELECT COUNT(*) n FROM schedules WHERE contract_id = ?').get(c.id).n;
+    if (stillEmpty && !opts.force) {
+      db.exec('ROLLBACK');
+      return { error: `该合同已有 ${stillEmpty} 个计划节点。如需重新生成，请先到「收付款计划」里删除原节点。`, existing: stillEmpty };
+    }
     // is_demo 跟着合同走：示例合同生成的计划节点也算「示例」，
     // 否则「清空示例数据」清不掉它们，反复补写示例数据会不断累积。
     const demoFlag = c.is_demo ? 1 : 0;

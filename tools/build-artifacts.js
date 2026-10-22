@@ -107,7 +107,14 @@ function tarIsGnu () {
  */
 function tarGz (cwd, entry, out) {
   const gnu = tarIsGnu();
-  const args = ['-czf', out];
+  // ⚠️ 输出路径必须换成**相对 cwd** 的写法。Windows 上 out 长这样：
+  //    C:\...\dist-artifacts\elv-pms-1.1.1-linux.tar.gz
+  //    GNU tar 会把开头的 `C:` 当成远程主机，报
+  //    "tar (child): Cannot connect to C: resolve failed"。
+  //    --force-local 只有 GNU tar 认、bsdtar 不认，所以统一用相对路径，
+  //    两种 tar 都吃（cwd 和 out 都在 dist-artifacts 下，不会跨盘）。
+  const relOut = path.relative(cwd, out).split(path.sep).join('/');
+  const args = ['-czf', relOut];
   if (gnu) args.push('--mode=u+rw,go+r,go-w', '--owner=0', '--group=0', '--numeric-owner');
   args.push(entry);
   const r = spawnSync('tar', args, { cwd, encoding: 'utf8', windowsHide: true });

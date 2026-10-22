@@ -145,6 +145,25 @@ if (plan.error) {
   }
 }
 
+// 同一份合同不能生成两套计划节点。
+// 单进程下靠"先查一次"就够；PG 多副本部署时两个副本会同时看到 0 个，
+// 各插一套 → 回款计划金额翻倍。所以查和写必须在同一个事务里。
+const again = dbf.generatePlan(C3);
+const cnt3 = db.prepare('SELECT COUNT(*) n FROM schedules WHERE contract_id = ?').get(C3).n;
+check('重复生成计划会被拦下', !!again.error, again.error || `又生成了 ${again.created} 个节点`);
+check('节点数量没有翻倍', !plan.error && cnt3 === plan.created, `${cnt3} 个（首次生成 ${plan.created} 个）`);
+
+// 静态复查：那次"再查一遍"必须落在 BEGIN 之后（放在事务外等于没加）
+{
+  const src = fs.readFileSync(path.join(__dirname, '..', 'db.js'), 'utf8');
+  const s0 = src.indexOf('function generatePlan');
+  const body = s0 >= 0 ? src.slice(s0, src.indexOf('\n/**', s0) > 0 ? src.indexOf('\n/**', s0) : s0 + 6000) : '';
+  const iBegin = body.indexOf("db.exec('BEGIN')");
+  const iRecheck = body.indexOf('SELECT COUNT(*) n FROM schedules WHERE contract_id = ?', iBegin + 1);
+  check('重复检查落在事务内（不是事务外的空转）', iBegin > 0 && iRecheck > iBegin,
+    iBegin < 0 ? '找不到 BEGIN' : (iRecheck < 0 ? '事务内没有再做一次计数' : 'OK'));
+}
+
 // ================================================================
 console.log('\n[3] 时间比较：保留期判定必须用本地时间');
 

@@ -94,7 +94,11 @@ const countFiles = (dir) => {
   const dir = `elv-pms-${VER}-linux`;
   ok(fs.existsSync(lz), `${path.basename(lz)} 存在`);
   if (fs.existsSync(lz)) {
-    const ex = spawnSync('tar', ['-xzf', lz, '-C', WORK], { encoding: 'utf8', windowsHide: true });
+    // ⚠️ 所有参数都用相对路径 + cwd。Windows 上绝对路径是 C:\...，
+    //    GNU tar 会把开头的 `C:` 当成远程主机（"Cannot connect to C:"，退出码 128），
+    //    于是解压"失败"，后面每一条都变成假红。
+    const ex = spawnSync('tar', ['-xzf', path.basename(lz), '-C', path.basename(WORK)],
+      { cwd: OUT, encoding: 'utf8', windowsHide: true });
     ok(ex.status === 0, '解压成功' + (ex.status === 0 ? '' : ' ' + (ex.stderr || '').slice(0, 120)));
     const root = path.join(WORK, dir);
     const L = p => fs.existsSync(path.join(root, p));
