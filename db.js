@@ -187,7 +187,16 @@ const nowISO = () => fmtLocal(new Date());
  */
 const daysAgoISO = days => fmtLocal(new Date(Date.now() - num(days || 0) * 86400000));
 const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-const round2 = v => Math.round((num(v) + Number.EPSILON) * 100) / 100;
+/**
+ * 两位小数。⚠️ 超过 1e306 的数乘 100 会溢出成 Infinity ——
+ * 以前这里就那样返回 Infinity，再入库变成 NULL（派生列凭空消失）。
+ * 保存路径已经有上限校验，这里是最后一道兜底：溢出就按原值返回，至少还是个有限数。
+ */
+const round2 = v => {
+  const n = num(v);
+  const r = Math.round((n + Number.EPSILON) * 100) / 100;
+  return Number.isFinite(r) ? r : n;
+};
 const today = () => new Date().toLocaleDateString('sv-SE');   // YYYY-MM-DD，本地时区
 
 function normalizeOption (o) { return typeof o === 'string' ? { value: o, label: o } : o; }
@@ -298,15 +307,45 @@ function applyDerived (table, row, provided = new Set()) {
   return row;
 }
 
+/**
+ * 数值字段的上限。
+ *
+ * 为什么必须有：JSON 里的 1e308 是完全合法的数字，JSON.parse 出来也是**有限数**，
+ * 但 round2() 里乘 100 就溢出了 —— 于是入库变成 Infinity，
+ * node:sqlite 把它存成 NULL，价税合计/不含税金额这些派生列就成了空值；
+ * 更糟的是看板的 SUM 会溢出，后端 JSON.stringify(Infinity) 直接输出 null，
+ * 界面上显示成「—」或者 NaN，谁也看不出是哪个数搞的。
+ *
+ * 金额封顶 1 万亿：和录入识别（tools/extract.js 的 parseMoney）同一个口径，
+ * 那边本来就拒绝超过 1.1 万亿的数 —— 两处不一致的话，同样的数字
+ * 手工能存、识别却存不进来，说不清谁对。
+ */
+const MONEY_MAX = 1e12;
+const NUMBER_MAX = 1e9;
+
 function validate (table, row) {
   const def = TABLES[table];
   const errs = [];
   for (const f of def.fields) {
-    if (!f.required) continue;
+    if (f.virtual) continue;
     const v = row[f.name];
-    if (v === null || v === undefined || v === '' || (typeof v === 'number' && !Number.isFinite(v))) {
+    if (f.required && (v === null || v === undefined || v === '' || (typeof v === 'number' && !Number.isFinite(v)))) {
       errs.push(`${f.label}不能为空`);
+      continue;
     }
+    if (f.type !== 'money' && f.type !== 'number' && f.type !== 'percent') continue;
+    if (v === null || v === undefined || v === '') continue;
+    const n = Number(v);
+    if (!Number.isFinite(n)) { errs.push(`${f.label}不是有效数字`); continue; }
+    const max = f.type === 'money' ? MONEY_MAX : NUMBER_MAX;
+    if (Math.abs(n) > max) {
+      errs.push(f.type === 'money'
+        ? `${f.label}超出范围：最大 1 万亿元，当前是 ${n.toExponential(2)}`
+        : `${f.label}超出范围：绝对值最大 ${max}，当前是 ${n.toExponential(2)}`);
+      continue;
+    }
+    // 百分比就是百分比：完工进度填 300、税率填 1000 都会让后面的统计没法看
+    if (f.type === 'percent' && (n < 0 || n > 100)) errs.push(`${f.label}应在 0 到 100 之间`);
   }
   return errs;
 }
@@ -570,6 +609,15 @@ function dependents (table, id) {
       expenses: count('SELECT COUNT(*) n FROM expenses WHERE project_id = ?'),
       materials: count('SELECT COUNT(*) n FROM materials WHERE project_id = ?'),
       maintenance: count('SELECT COUNT(*) n FROM maintenance WHERE project_id = ?'),
+      // ⚠️ contract_changes 原来不在这张清单里：它确实会被 deleteOneInTx 一起删掉，
+      //    但确认框上看不见 —— 用户看到「将同时处理：合同 1、收付款 2」就点了确定，
+      //    事后才发现变更记录也没了，而确认框从头到尾没提过它。
+      //    计数口径必须和 deleteOneInTx 的删除条件**逐字一致**：
+      //    变更的 project_id 是选填的（选好合同会自动带出，也可以不填），
+      //    只关联了合同的那部分也要算进来，否则又少报。
+      contract_changes: db.prepare(`SELECT COUNT(*) n FROM contract_changes
+        WHERE project_id = ? OR contract_id IN (SELECT id FROM contracts WHERE project_id = ?)`)
+        .get(i, i).n,
     };
   }
   if (table === 'contracts') {
@@ -1945,7 +1993,18 @@ function generatePlan (contractId, opts = {}) {
  */
 // 项目下的子记录表。这是**唯一**维护点：级联删除、附件清理、孤儿清理都用它。
 // 少写一张表，该表记录的附件就会在删父记录时悬空（record_id 指向已删除的行）。
-const PROJECT_CHILD_TABLES = ['contracts', 'schedules', 'payments', 'invoices', 'expenses', 'materials', 'maintenance'];
+//
+// ⚠️ 2026-10 补：contract_changes 一直漏在这份清单里（删项目时它明明被一起删掉）。
+//    后果有两层，都不出声：
+//      ① 挂在变更记录上的扫描件既不清理也不保留 —— record_id 指向已删除的行，
+//         而 attachments.purgeOrphans 只扫 record_id IS NULL，永远看不见它们；
+//         文件就那样躺在磁盘上，谁也不会再删。
+//      ② 启动自检 sweepOrphans 也按这份清单走，留下的孤儿变更行没人清，
+//         列表里继续显示「所属项目」为空的行。
+//    这跟当初漏写 schedules 是同一个坑，只是换了一张表 —— 所以这份清单
+//    必须和 schema 里所有带 project_id 的表一致，tools/cascade-trash-test.js
+//    会用 schema 自动枚举来盯住它，以后再加子表漏写了会直接红。
+const PROJECT_CHILD_TABLES = ['contracts', 'contract_changes', 'schedules', 'payments', 'invoices', 'expenses', 'materials', 'maintenance'];
 function projectChildTables () { return PROJECT_CHILD_TABLES; }
 
 function sweepOrphans () {
@@ -1959,6 +2018,12 @@ function sweepOrphans () {
   const r2 = db.prepare(`DELETE FROM schedules
     WHERE contract_id IS NOT NULL AND contract_id NOT IN (SELECT id FROM contracts)`).run();
   if (Number(r2.changes)) out.schedules_of_contract = Number(r2.changes);
+  // 合同变更的 contract_id 是 NOT NULL —— 没法像上面那样「解除关联」，只能删掉。
+  // 上面按 project_id 扫的那一遍漏掉「没填项目、只挂了合同」的记录，
+  // 合同一旦没了它们就是孤儿：列表里点开什么都没有，也无法再挂回任何合同。
+  const r2c = db.prepare(`DELETE FROM contract_changes
+    WHERE contract_id NOT IN (SELECT id FROM contracts)`).run();
+  if (Number(r2c.changes)) out.contract_changes_of_contract = Number(r2c.changes);
   for (const t of ['payments', 'invoices', 'materials', 'expenses']) {
     const r = db.prepare(`UPDATE ${t} SET contract_id = NULL
       WHERE contract_id IS NOT NULL AND contract_id NOT IN (SELECT id FROM contracts)`).run();

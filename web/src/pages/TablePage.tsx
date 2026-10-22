@@ -92,21 +92,35 @@ export default function TablePage() {
       .map(([k, v]) => `${k === 'attachments' ? '附件' : (meta?.tables?.[k]?.label || k)} ${v}`)
       .join('、')
 
+  /**
+   * 删除后的提示。
+   * 附件默认跟着记录一起进回收站（解除关联，文件不删），要等「彻底删除」或满 30 天
+   * 才清理 —— 所以这里说的是「N 个附件一并在回收站」，而不是「含 N 个附件」。
+   * 以前那句话读起来像"已经删掉了"，用户还原回来发现扫描件没了才知道不是。
+   */
   const afterDelete = (r: DeleteResult | undefined, extra = '') => {
+    const kept = Number(r?.keptAttachments || r?.keptFiles || 0)
+    const gone = Number(r?.removedAttachments || r?.removedFiles || 0)
+    const attNote = kept ? `（${kept} 个附件一并在回收站，彻底删除时才清理文件）`
+      : gone ? `（含 ${gone} 个附件，已删除）` : ''
     if (r?.trashError) {
-      toast(`已删除${extra}，但回收站没存下快照（${r.trashError}），这条记录无法还原`, 'err', 9000)
+      toast(`已删除${extra}${attNote}，但回收站没存下快照（${r.trashError}），这条记录无法还原`, 'err', 9000)
     } else {
-      toast(`已删除${extra}`, 'ok')
+      toast(`已删除${extra}${attNote}`, 'ok')
     }
   }
 
   const doDelete = async (row: Row) => {
     const label = row[def?.display || 'name'] ?? `#${row.id}`
-    const ok = await confirm(`删除「${label}」？`, '删除的记录会进回收站，30 天内可以还原。', '删除', true)
+    const ok = await confirm(
+      `删除「${label}」？`,
+      '删除的记录（含附件）会进回收站，30 天内可以还原。',
+      '删除', true,
+    )
     if (!ok) return
     try {
       const r = await http.remove(table, row.id)
-      afterDelete(r, r?.removedAttachments ? `（含 ${r.removedAttachments} 个附件）` : '')
+      afterDelete(r)
       void load(); void refreshDash()
     } catch (e: any) {
       // 409 = 有关联数据，需要二次确认级联
@@ -124,7 +138,7 @@ export default function TablePage() {
 
   const doBatchDelete = async () => {
     if (!selected.length) return
-    const ok = await confirm(`删除选中的 ${selected.length} 条？`, '删除的记录会进回收站，30 天内可以还原。', '删除', true)
+    const ok = await confirm(`删除选中的 ${selected.length} 条？`, '删除的记录（含附件）会进回收站，30 天内可以还原。', '删除', true)
     if (!ok) return
     try {
       const r = await http.batchDelete(table, selected, {})

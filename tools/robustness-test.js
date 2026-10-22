@@ -235,7 +235,55 @@ const leaks = (text) => LEAK_MARKS.some(m => text.includes(m))
   }
 
   // ───────────────────────────────────────────────
-  console.log('\n [7] 折腾完这一圈，服务还好好的吗');
+  console.log('\n [7] 数值极值：不让 Infinity / NaN 混进库');
+  // ───────────────────────────────────────────────
+  // 1e308 是**合法 JSON 数字**，JSON.parse 出来也是有限数，所以任何
+  // `Number.isFinite` 的输入检查都拦不住它 —— 真正溢出的是后面这一步：
+  //   round2(1e308) = Math.round(1e308 * 100) / 100 = Infinity
+  // 以前这些数照样入库：
+  //   · 发票金额 1e308 → 价税合计算成 Infinity → node:sqlite 存成 NULL
+  //   · 材料 1e200 × 1e200 → 金额 0
+  //   · 看板 SUM 溢出 → JSON.stringify(Infinity) = null → 界面显示「—」
+  // 现在保存时就按上限拒掉，并说清楚上限是多少。
+  {
+    const parse = (r) => { try { return JSON.parse(r.text) } catch { return {} } };
+    const proj = ((parse(await hit('GET', '/api/list/projects?limit=1')).rows) || [])[0] || {};
+    const pid = proj.id;
+    const today = new Date().toLocaleDateString('sv-SE');
+    // 注意：这些记录名都带 EXTREME- 前缀，修好之前（旧代码）会被真的写进去，
+    // 所以下面无论成败都要清一遍，不能把共享测试库灌成垃圾场。
+    const CASES = [
+      ['发票金额 1e308', 'invoices', { project_id: pid, direction: 'out', issue_date: today, amount: 1e308, tax_rate: 9 }],
+      ['材料 1e200 × 1e200', 'materials', { project_id: pid, name: 'EXTREME-材料', quantity: 1e200, unit_price: 1e200 }],
+      ['合同金额 1e308', 'contracts', { name: 'EXTREME-合同', project_id: pid, amount: 1e308, tax_rate: 9, category: '项目合同', direction: 'in' }],
+      ['项目进度 1e308', 'projects', { name: 'EXTREME-项目', status: '进行中', progress: 1e308 }],
+      ['项目进度 300%', 'projects', { name: 'EXTREME-进度', status: '进行中', progress: 300 }],
+    ];
+    const bad = [];
+    for (const [label, t, body] of CASES) {
+      const r = await hit('POST', '/api/save/' + t, body);
+      const msg = parse(r).error || '';
+      if (r.status !== 400) bad.push(`${label} → HTTP ${r.status}`);
+      else if (!/超出范围|应在 0 到 100/.test(msg)) bad.push(`${label} → 报错看不懂：${msg.slice(0, 40)}`);
+      else if (leaks(r.text)) bad.push(`${label} → 内部异常外泄`);
+    }
+    check(`${CASES.length} 种超范围数值一律 400，并说清上限`, bad.length === 0, bad.slice(0, 3).join('；'));
+
+    const d = parse(await hit('GET', '/api/dashboard'));
+    const nonNum = Object.entries(d.totals || {})
+      .filter(([, v]) => v === null || (typeof v === 'number' && !Number.isFinite(v)))
+      .map(([k]) => k);
+    check('看板每一项都还是数字（`SUM` 溢出会让整块变成 null）', nonNum.length === 0, nonNum.join('、'));
+
+    // 清理：旧代码下这些东西是真的建出来了
+    for (const t of ['invoices', 'materials', 'contracts', 'projects']) {
+      const rows = (parse(await hit('GET', `/api/list/${t}?q=EXTREME-`)).rows) || [];
+      for (const row of rows) await hit('POST', `/api/delete/${t}/${row.id}`, { cascade: true, keepAttachments: false });
+    }
+  }
+
+  // ───────────────────────────────────────────────
+  console.log('\n [8] 折腾完这一圈，服务还好好的吗');
   // ───────────────────────────────────────────────
   {
     const h = await hit('GET', '/api/health');

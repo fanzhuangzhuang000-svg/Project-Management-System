@@ -87,7 +87,9 @@ async function upload (table, recordId, file) {
   const orphanBefore = (await get('/api/attachments/stats')).orphan;
   const r3 = await post('/api/batch-delete', { table: 'projects', ids: [proj.id], cascade: true, keepAttachments: true });
   check('删除成功', r3.status === 200 && r3.body.deleted === 1, JSON.stringify(r3.body));
-  check('报告保留了 2 个附件', r3.body.removedFiles === 2, '保留 ' + r3.body.removedFiles);
+  // 保留的分支现在单独用 keptFiles 报告（removedFiles 只统计真的删掉的文件），
+  // 以前这里两个数字混在一个字段里，界面上没法说清"删了几个、留了几个"。
+  check('报告保留了 2 个附件', r3.body.keptFiles === 2, '保留 ' + r3.body.keptFiles);
   check('项目已删除', (await get('/api/get/projects/' + proj.id)).error !== undefined);
   const schedLeft = await get('/api/list/schedules?q=' + encodeURIComponent(TAG));
   check('收付款计划节点被一并删除（不留孤儿）', schedLeft.total === 0, schedLeft.total + ' 个残留');
@@ -155,7 +157,7 @@ async function upload (table, recordId, file) {
 
     const r6 = await post('/api/batch-delete', { table: 'projects', ids: [p6.id], cascade: true, keepAttachments: true });
     check('删除项目', r6.status === 200 && r6.body.deleted === 1, JSON.stringify(r6.body));
-    check('报告保留了计划节点上的附件', r6.body.removedFiles >= 1, '保留 ' + r6.body.removedFiles);
+    check('报告保留了计划节点上的附件', r6.body.keptFiles >= 1, '保留 ' + r6.body.keptFiles);
 
     const a6 = (await get('/api/attachments')).rows.find(x => x.id === nodeAtt.id);
     check('附件被标记为已解除关联（不再是悬空引用）',

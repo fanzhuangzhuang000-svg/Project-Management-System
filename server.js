@@ -1734,20 +1734,24 @@ async function handleApi (req, res, url) {
     }
 
     // 附件必须在删业务数据之前处理：子记录删掉后就找不到挂在它们身上的附件了
-    const keep = !!body.keepAttachments;
+    // 默认「留在回收站」，理由同单条删除（见上面那段注释）：界面承诺 30 天内可还原，
+    // 就不能在删除的当下把扫描件先毁掉。
+    const keep = body.keepAttachments === undefined ? true : !!body.keepAttachments;
     let removedFiles = 0;
+    let keptFiles = 0;
     for (const id of ids) {
       try {
-        if (keep) removedFiles += table === 'projects' ? attach.detachForProject(id) : attach.detachForRecord(table, id);
+        if (keep) keptFiles += table === 'projects' ? attach.detachForProject(id) : attach.detachForRecord(table, id);
         else removedFiles += table === 'projects' ? attach.removeForProject(id) : attach.removeForRecord(table, id);
       } catch { /* 单个失败不影响整体 */ }
     }
 
     const r = dbf.batchDelete(table, ids, { cascade: true });
     if (r.error) return sendJSON(res, 400, r);
-    writeLog(req, 'batch_delete', table, null, `${ids.length} 条`, keep ? `保留附件 ${removedFiles} 个` : `含附件 ${removedFiles} 个`);
-    console.log(`[批量删除] ${TABLES[table].label}：${r.deleted} 条，${keep ? '保留' : '删除'}附件 ${removedFiles} 个`);
-    return sendJSON(res, 200, { ...r, removedFiles, keptAttachments: keep, trashId, trashError });
+    writeLog(req, 'batch_delete', table, null, `${ids.length} 条`,
+      keep ? `附件 ${keptFiles} 个留在回收站` : `含附件 ${removedFiles} 个`);
+    console.log(`[批量删除] ${TABLES[table].label}：${r.deleted} 条，${keep ? '保留' : '删除'}附件 ${keep ? keptFiles : removedFiles} 个`);
+    return sendJSON(res, 200, { ...r, removedFiles, keptFiles, keptAttachments: keptFiles, kept: keep, trashId, trashError });
   }
 
   if (head === 'get' && a && b) {
@@ -1861,7 +1865,15 @@ async function handleApi (req, res, url) {
     }
     // 附件必须先于业务数据处理：子记录删掉后就找不到挂在它们身上的附件了。
     // keepAttachments=1 表示只删记录、把扫描件留在附件库里（解除关联，不会被自动清理）
-    const keep = !!body.keepAttachments;
+    //
+    // ⚠️ 默认值从「删文件」改成「留文件」（2026-10）。
+    //    原来不传这个参数（界面从来不传）就当场把文件删了，而界面上写的是
+    //    「删除的记录会进回收站，30 天内可以还原」—— 记录确实能还原，
+    //    附件却早就没了，还原回来是个空项目。用户以为有 30 天反悔期，其实没有。
+    //    现在默认解除关联、文件留下；等回收站条目被「彻底删除」或满 30 天
+    //    （trash.purge → attach.remove）才真正删掉，与回收站的承诺对齐。
+    //    显式传 false 仍然是立即删文件（老调用方/清理脚本行为不变）。
+    const keep = body.keepAttachments === undefined ? true : !!body.keepAttachments;
     const numId = idOf(b);
     if (numId === null) return sendJSON(res, 400, { error: '编号不正确' });
     const target = dbf.db.prepare(`SELECT * FROM ${a} WHERE id = ?`).get(numId);
@@ -1886,15 +1898,17 @@ async function handleApi (req, res, url) {
     }
 
     let removedAttachments = 0;
+    let keptAttachments = 0;
     if (keep) {
-      removedAttachments = a === 'projects' ? attach.detachForProject(b) : attach.detachForRecord(a, b);
+      keptAttachments = a === 'projects' ? attach.detachForProject(b) : attach.detachForRecord(a, b);
     } else {
       removedAttachments = a === 'projects' ? attach.removeForProject(b) : attach.removeForRecord(a, b);
     }
     const r = blockers.length ? dbf.deleteCascade(a, b) : dbf.deleteRow(a, b);
     if (r.error) return sendJSON(res, 400, r);
-    writeLog(req, 'delete', a, numId, label, keep ? '保留附件' : `含附件 ${removedAttachments} 个`);
-    return sendJSON(res, 200, { ok: true, removedAttachments, keptAttachments: keep, trashId, trashError });
+    writeLog(req, 'delete', a, numId, label,
+      keep ? `附件 ${keptAttachments} 个留在回收站` : `含附件 ${removedAttachments} 个`);
+    return sendJSON(res, 200, { ok: true, removedAttachments, keptAttachments, kept: keep, trashId, trashError });
   }
 
   // ---------------- 回收站 ----------------

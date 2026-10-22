@@ -457,9 +457,14 @@ const post = <T = any>(path: string, body?: unknown) =>
 export interface DeleteResult {
   ok?: boolean
   deleted?: number
+  /** 真的从磁盘/存储里删掉的文件数（只有显式要求立即删文件时才会 > 0） */
   removedAttachments?: number
   removedFiles?: number
-  keptAttachments?: boolean
+  /** 解除关联、留在回收站等「彻底删除」时再清理的附件数（默认走这条） */
+  keptAttachments?: number
+  keptFiles?: number
+  /** 本次是否使用了「保留附件」策略 */
+  kept?: boolean
   trashId?: number | null
   trashError?: string | null
 }

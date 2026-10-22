@@ -228,6 +228,10 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 起源：还原工具在 Windows 上**从未真正生效**过 —— 自己开着库导致 unlink 被
     // 空 catch 吞掉，旧 -wal 回放把数据退回去，而界面/命令行都显示"还原成功"。
     ['备份与还原', 'restore-test.js'],
+    // 级联删除与回收站：建一棵完整的项目数据树（8 张子表 + 3 个附件）→ 删 → 还原 → 复查。
+    // 这套自己起服务。起源：删项目时 contract_changes 既不在删除提示里、也不在附件
+    // 清理清单里；而附件在删除的当下就被真删了，界面却承诺「30 天内可以还原」。
+    ['级联删除与回收站', 'cascade-trash-test.js'],
   ];
   head(`3/6  主程序测试（${SUITES.length} 套件）`);
   let suitePass = 0, suiteTotal = 0, skipped = 0;
