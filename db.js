@@ -201,6 +201,37 @@ const today = () => new Date().toLocaleDateString('sv-SE');   // YYYY-MM-DD，�
 
 function normalizeOption (o) { return typeof o === 'string' ? { value: o, label: o } : o; }
 
+/**
+ * 日期归一化：返回 `YYYY-MM-DD`，认不出来就返回 null。
+ *
+ * 为什么必须做（2026-10 实测）：此前 `type: 'date'` 的字段就是个普通文本框，
+ * `due_date` 填 'abc'、'2026-13-45'、'2026/10/01' 都能存进去。而逾期的判断是
+ * **字符串比较**（`due_date < today`）：
+ *   · 'abc' → 'a' 比 '2' 大，永远不小于今天 → 这笔款永远不算逾期
+ *   · '2026/10/01' → '/' 比 '-' 大 → 同样永远不逾期
+ * 于是催款清单上直接少一笔，界面上还看不出任何异常。
+ * 导入那条路本来就会拦（import.js 里有 normalizeDate 并给了中文报错），
+ * 只有接口/表单这条路敞开 —— 两边口径必须一致。
+ *
+ * 注意：这里要做**真实日期**校验，2026-02-30、2026-13-01 都算无效。
+ */
+function normDate (raw) {
+  const s = String(raw === undefined || raw === null ? '' : raw).trim();
+  if (!s) return null;
+  let y; let mo; let d;
+  let m = /^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/.exec(s);
+  if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+  else if ((m = /^(\d{4})(\d{2})(\d{2})$/.exec(s))) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+  // 「2026-10」这种只到月份的：按当月 1 号算（对账单、月度统计都按整月归集）
+  else if ((m = /^(\d{4})[-/.年](\d{1,2})$/.exec(s))) { y = +m[1]; mo = +m[2]; d = 1; }
+  else return null;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(y, mo - 1, d);
+  // 用回读校验，顺带把 2026-02-30 这种"格式对、日子不存在"的挡掉
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
 /** 把前端传来的原始对象清洗成可入库的行 */
 function sanitize (table, input, { partial = false } = {}) {
   const def = TABLES[table];
@@ -254,7 +285,10 @@ function sanitize (table, input, { partial = false } = {}) {
       }
       default: {
         const s = (v === undefined || v === null) ? '' : String(v).trim();
-        row[f.name] = s === '' ? null : s;
+        if (s === '') { row[f.name] = null; break; }
+        // 日期统一存成 YYYY-MM-DD（逾期判断、月度统计都靠字符串比较和 substr，
+        // 混进 2026/10/01 这种写法就会静默算错）。认不出来的原样留着，交给 validate 拒掉。
+        row[f.name] = f.type === 'date' ? (normDate(s) || s) : s;
       }
     }
   }
@@ -333,8 +367,13 @@ function validate (table, row) {
       errs.push(`${f.label}不能为空`);
       continue;
     }
-    if (f.type !== 'money' && f.type !== 'number' && f.type !== 'percent') continue;
+    if (f.type !== 'money' && f.type !== 'number' && f.type !== 'percent' && f.type !== 'date') continue;
     if (v === null || v === undefined || v === '') continue;
+    if (f.type === 'date') {
+      // 走 sqlite 之前就拦：认不出来的日期会让"逾期"判断永远为假（详见 normDate 注释）
+      if (!normDate(v)) errs.push(`${f.label}不是有效日期（写成 2026-03-05 这种格式）`);
+      continue;
+    }
     const n = Number(v);
     if (!Number.isFinite(n)) { errs.push(`${f.label}不是有效数字`); continue; }
     const max = f.type === 'money' ? MONEY_MAX : NUMBER_MAX;

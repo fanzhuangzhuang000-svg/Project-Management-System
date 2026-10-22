@@ -283,7 +283,42 @@ const leaks = (text) => LEAK_MARKS.some(m => text.includes(m))
   }
 
   // ───────────────────────────────────────────────
-  console.log('\n [8] 折腾完这一圈，服务还好好的吗');
+  console.log('\n [8] 日期：认不出来的不能入库，能认的要归一');
+  // ───────────────────────────────────────────────
+  // 逾期判断是字符串比较（due_date < today），所以：
+  //   'abc'        → 'a' > '2'，永远不逾期
+  //   '2026/10/01' → '/' > '-'，永远不逾期
+  //   '2026-13-45' → 月份 13 也能存，月度统计 substr(0,7) 得到 '2026-13'
+  // 以前这三种都能存进去，代价是那一笔款从催款清单上消失，界面上还看不出毛病。
+  {
+    const parse = (r) => { try { return JSON.parse(r.text) } catch { return {} } };
+    const proj = ((parse(await hit('GET', '/api/list/projects?limit=1')).rows) || [])[0] || {};
+    const base = { project_id: proj.id, direction: 'in', phase: '进度款', amount: 1000 };
+
+    const badDates = [];
+    for (const d of ['abc', '2026-13-45', '2026-02-30', '下周一']) {
+      const r = await hit('POST', '/api/save/schedules', { ...base, due_date: d });
+      const msg = parse(r).error || '';
+      if (r.status !== 400) badDates.push(`${d} → HTTP ${r.status}`);
+      else if (!/日期/.test(msg)) badDates.push(`${d} → 报错没提日期：${msg.slice(0, 30)}`);
+    }
+    check('认不出来的日期被拒（"abc"、13 月、2 月 30 号）', badDates.length === 0, badDates.join('；'));
+
+    const slash = await hit('POST', '/api/save/schedules', { ...base, due_date: '2026/10/01' });
+    const slashRow = parse(slash).row || {};
+    check('2026/10/01 这种写法被归一成 2026-10-01', slash.status === 200 && slashRow.due_date === '2026-10-01',
+      `${slash.status} ${slashRow.due_date || parse(slash).error}`);
+    if (slashRow.id) await hit('POST', `/api/delete/schedules/${slashRow.id}`, { keepAttachments: false });
+
+    const compact = await hit('POST', '/api/save/schedules', { ...base, due_date: '20261001' });
+    const compactRow = parse(compact).row || {};
+    check('20261001 也能认（粘贴 Excel 里常见）', compact.status === 200 && compactRow.due_date === '2026-10-01',
+      `${compact.status} ${compactRow.due_date || parse(compact).error}`);
+    if (compactRow.id) await hit('POST', `/api/delete/schedules/${compactRow.id}`, { keepAttachments: false });
+  }
+
+  // ───────────────────────────────────────────────
+  console.log('\n [9] 折腾完这一圈，服务还好好的吗');
   // ───────────────────────────────────────────────
   {
     const h = await hit('GET', '/api/health');
