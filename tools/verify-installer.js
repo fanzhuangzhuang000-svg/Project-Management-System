@@ -237,35 +237,59 @@ async function forceRmDir (dir, tries = 8) {
   // ---------- 3. 快捷方式 / 自启 / 注册表 ----------
   console.log('\n[3] 快捷方式、开机自启、卸载入口');
   const deskLnk = path.join(DESKTOP, '弱电项目管理系统.lnk');
-  ok('桌面快捷方式', fs.existsSync(deskLnk));
-  if (fs.existsSync(deskLnk)) {
-    const di = lnkInfo(deskLnk);
-    // ★ 这条是「桌面图标点了没反应」的回归测试：
-    // 老版本桌面图标指向「后台启动.vbs」—— 只起服务、不开浏览器，
-    // 用户双击后屏幕毫无变化，以为程序坏了。
-    ok('桌面图标指向「打开系统.vbs」（起服务并自动开浏览器）',
-      /打开系统\.vbs/i.test(di.args), di.args || '(空)');
-    ok('桌面图标用的是应用图标（不是 node 的绿色小恐龙）',
-      /app\.ico/i.test(di.icon), di.icon || '(默认)');
+  const smOpen = path.join(SM_DIR, '打开系统.lnk');
+  const smStop = path.join(SM_DIR, '停止服务.lnk');
+  const smUn = path.join(SM_DIR, '卸载.lnk');
+  const autoLnk = path.join(STARTUP, '弱电项目管理系统.lnk');
+  const madeLnks = [deskLnk, smOpen, smStop, smUn, autoLnk].filter(p => fs.existsSync(p));
+
+  /**
+   * 这台机器建不出 .lnk 时，不该判产品有错 —— 但也绝不能悄悄放过。
+   *
+   * 判据用**安装器自己的报告**，不是猜环境：
+   *   · 安装器在 MakeShortcut 失败时会输出 `[快捷方式失败] N 个：原因`
+   *     （以前那里是个空的 catch{}，装完桌面没图标、日志里什么都没有）
+   *   · 只有当"它报了失败"且"5 个 lnk 一个都没有"时才跳过
+   *   · 反过来：它没报失败却没建出来 → 说明 CreateShortcuts 压根没被调用，那是回归，必须红
+   *
+   * CI 的 windows runner 就是第一种：没有可用的桌面外壳，
+   * WScript.Shell 的 CreateShortcut 抛异常，而程序本身完全正常。
+   */
+  const lnkFail = /\[快捷方式失败\][^\n]*/.exec(inst.out || '');
+  if (lnkFail && madeLnks.length === 0) {
+    S('桌面 / 开始菜单 / 开机自启快捷方式',
+      '安装器报告建不出来（' + lnkFail[0].slice(0, 160) + '）—— 这台机器没有可用的桌面外壳。'
+      + '程序本身正常，用户可以双击安装目录里的「启动系统.bat」');
+  } else {
+    ok('桌面快捷方式', fs.existsSync(deskLnk));
+    if (fs.existsSync(deskLnk)) {
+      const di = lnkInfo(deskLnk);
+      // ★ 这条是「桌面图标点了没反应」的回归测试：
+      // 老版本桌面图标指向「后台启动.vbs」—— 只起服务、不开浏览器，
+      // 用户双击后屏幕毫无变化，以为程序坏了。
+      ok('桌面图标指向「打开系统.vbs」（起服务并自动开浏览器）',
+        /打开系统\.vbs/i.test(di.args), di.args || '(空)');
+      ok('桌面图标用的是应用图标（不是 node 的绿色小恐龙）',
+        /app\.ico/i.test(di.icon), di.icon || '(默认)');
+    }
+    // 桌面上留两个图标（一个起服务一个开网页）是上一版的设计，用户分不清点哪个
+    ok('桌面上多余的「（打开）.url」已清掉',
+      !fs.existsSync(path.join(DESKTOP, '弱电项目管理系统（打开）.url')));
+    ok('开始菜单「打开系统」', fs.existsSync(smOpen));
+    ok('开始菜单「停止服务」', fs.existsSync(smStop));
+
+    // ★ 这条是「开始菜单里的卸载点了没反应」的回归测试：
+    // 老版本在复制「卸载.exe」之前就建了快捷方式，首次安装必然指向空路径。
+    ok('开始菜单「卸载」', fs.existsSync(smUn));
+    if (fs.existsSync(smUn)) {
+      const ui = lnkInfo(smUn);
+      ok('「卸载」指向真实存在的卸载.exe', !!ui.target && fs.existsSync(ui.target),
+        ui.target || '(空路径)');
+    }
+    ok('开机自启已设置', fs.existsSync(autoLnk));
   }
-  // 桌面上留两个图标（一个起服务一个开网页）是上一版的设计，用户分不清点哪个
-  ok('桌面上多余的「（打开）.url」已清掉',
-    !fs.existsSync(path.join(DESKTOP, '弱电项目管理系统（打开）.url')));
+  // 下面两条跟桌面外壳无关，任何环境都该成立
   ok('开始菜单目录', fs.existsSync(SM_DIR));
-  ok('开始菜单「打开系统」', fs.existsSync(path.join(SM_DIR, '打开系统.lnk')));
-  ok('开始菜单「停止服务」', fs.existsSync(path.join(SM_DIR, '停止服务.lnk')));
-
-  // ★ 这条是「开始菜单里的卸载点了没反应」的回归测试：
-  // 老版本在复制「卸载.exe」之前就建了快捷方式，首次安装必然指向空路径。
-  const unLnk = path.join(SM_DIR, '卸载.lnk');
-  ok('开始菜单「卸载」', fs.existsSync(unLnk));
-  if (fs.existsSync(unLnk)) {
-    const ui = lnkInfo(unLnk);
-    ok('「卸载」指向真实存在的卸载.exe', !!ui.target && fs.existsSync(ui.target),
-      ui.target || '(空路径)');
-  }
-
-  ok('开机自启已设置', fs.existsSync(path.join(STARTUP, '弱电项目管理系统.lnk')));
   ok('已注册到「应用和功能」', regExists());
   // 版本号曾经写死成 2.0.0，「应用和功能」里永远是错版本，报障时对不上号
   const pkgVer = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;

@@ -312,12 +312,26 @@ function ensureAdmin () {
   const n = db.prepare('SELECT COUNT(*) n FROM users').get().n;
   if (n > 0) return { created: false, total: n };
   const ts = nowISO();
-  db.prepare(`INSERT INTO users (username, name, password, role, perms, status, must_change_pw, remark, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-    DEFAULT_ADMIN.username, DEFAULT_ADMIN.name, hashPassword(DEFAULT_ADMIN.password),
-    'admin', JSON.stringify({ all: true }), '启用', 1,
-    '首次启动自动创建，请尽快修改密码', ts, ts,
-  );
+  try {
+    db.prepare(`INSERT INTO users (username, name, password, role, perms, status, must_change_pw, remark, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      DEFAULT_ADMIN.username, DEFAULT_ADMIN.name, hashPassword(DEFAULT_ADMIN.password),
+      'admin', JSON.stringify({ all: true }), '启用', 1,
+      '首次启动自动创建，请尽快修改密码', ts, ts,
+    );
+  } catch (e) {
+    // ⚠️ 并发启动不是异常场景，是**正常场景**：
+    //    「开机自启 + 用户自己也双击了一次启动脚本」、覆盖安装后新旧进程交接、
+    //    双击两次图标 —— 两个进程都会先看到 users 为空，然后各插一次。
+    //    第二个撞 UNIQUE 后原来会抛到顶层，**服务进程直接崩掉**，
+    //    用户看到的现象是「双击图标，窗口闪一下就没了」。
+    //    这里把唯一键冲突当成「已经有人建好了」，返回 created:false 继续启动。
+    //    （verify-overwrite 里就是这么抓到的：子进程日志一行 UNIQUE constraint failed）
+    if (/UNIQUE|duplicate key/i.test(String(e && e.message))) {
+      return { created: false, total: db.prepare('SELECT COUNT(*) n FROM users').get().n };
+    }
+    throw e;
+  }
   return { created: true, ...DEFAULT_ADMIN, total: 1 };
 }
 

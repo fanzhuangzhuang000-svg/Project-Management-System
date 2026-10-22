@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -212,6 +213,11 @@ End Function
         [STAThread]
         static int Main(string[] args)
         {
+            // 输出统一用 UTF-8。
+            // 默认是 Encoding.Default（中文系统 GBK、英文系统 437/1252）—— 于是
+            // 「静默安装」时调用方按 UTF-8 读回来的全是一串 ????，连报错原因都看不出。
+            // CI 上排查覆盖安装失败时就卡在这里：只看到 `[??] ??? 10/66`。
+            try { Console.OutputEncoding = new UTF8Encoding(false); } catch { /* 无控制台时忽略 */ }
             ParseArgs(args);
             if (installDir == null || installDir.Length == 0)
             {
@@ -314,6 +320,11 @@ End Function
             CopyUninstaller();
             if (log != null) log("正在创建快捷方式…");
             CreateShortcuts();
+            // 失败就如实报（原因带异常类型和消息）。
+            // 验证脚本靠这一行区分「这台机器建不出快捷方式」和「安装器压根没建」——
+            // 前者是环境（CI runner、无桌面外壳的精简系统），后者是回归。
+            if (shortcutFails.Count > 0 && log != null)
+                log("[快捷方式失败] " + shortcutFails.Count + " 个：" + string.Join(" | ", shortcutFails.ToArray()));
             if (log != null) log("正在注册卸载信息…");
             RegisterUninstall();
             if (!noAutostart)
@@ -609,6 +620,9 @@ End Function
             return Path.Combine(installDir, "node.exe");
         }
 
+        /// <summary>快捷方式创建失败的原因（一个都没建出来时，安装器要如实报出来）</summary>
+        static List<string> shortcutFails = new List<string>();
+
         static void MakeShortcut(string lnkPath, string target, string arguments, string workDir, string desc, string icon)
         {
             try
@@ -626,7 +640,15 @@ End Function
                     lt.InvokeMember("IconLocation", BindingFlags.SetProperty, null, lnk, new object[] { icon + ",0" });
                 lt.InvokeMember("Save", BindingFlags.InvokeMethod, null, lnk, null);
             }
-            catch { /* 快捷方式失败不影响主流程 */ }
+            catch (Exception ex)
+            {
+                // 不能让快捷方式失败影响安装主流程 —— 但这个失败**必须说出来**。
+                // 以前这里是空的 catch{}：装完桌面没图标、开始菜单空着，用户一脸茫然，
+                // 安装程序自己却一声不响，连日志里都查不到（验证脚本也就只能报"没有快捷方式"，
+                // 分不清是"没建"还是"建不出来"）。
+                shortcutFails.Add(Path.GetFileName(lnkPath) + "：" + ex.GetType().Name
+                    + (ex.Message != null && ex.Message.Length > 0 ? " " + ex.Message : ""));
+            }
         }
 
         static void MakeUrlShortcut(string path, string url)
@@ -740,12 +762,42 @@ End Function
         /// 同级的 "…\ELV-PMS-测试\node.exe"、"…\ELV-PMS-old\node.exe" 都会被算进来，
         /// 装一次新版就把同事电脑上另一套实例杀掉。
         /// </summary>
+        /// <summary>
+        /// 把可能带 8.3 短名的路径换成标准长路径。
+        ///
+        /// ⚠️ 这是覆盖安装失败的真凶（CI 上抓到的）：
+        ///    StopServer 用「进程的 exe 路径是否以安装目录开头」判断该不该杀，
+        ///    而这两条路径的**写法**常常不一致 ——
+        ///      安装目录来自 %TEMP% 展开 → C:\Users\RUNNER~1\AppData\Local\Temp\...
+        ///      进程上报的 exe           → C:\Users\runneradmin\AppData\Local\Temp\...
+        ///    前缀比较直接不成立，于是旧服务没停 → node.exe 被占用 → 解压到第 10 个文件
+        ///    就失败退出（exit=1）。用户机器上用户名长一点（ADMINI~1）、
+        ///    或程序装在带空格/中文的目录里，同样会踩到。
+        ///    换成两边都先规范化成长路径再比。
+        /// </summary>
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern uint GetLongPathName(string shortPath, StringBuilder longPath, uint bufferLength);
+
+        static string LongPath(string p)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(p)) return p;
+                StringBuilder sb = new StringBuilder(1024);
+                uint n = GetLongPathName(p, sb, (uint)sb.Capacity);
+                if (n > 0 && n <= sb.Capacity) return sb.ToString();
+            }
+            catch { /* 转换不了就用原样 */ }
+            return p;
+        }
+
         static bool IsOurExe(string exe)
         {
             if (string.IsNullOrEmpty(exe)) return false;
-            string root = installDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            string root = Path.GetFullPath(LongPath(installDir))
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                           + Path.DirectorySeparatorChar;
-            return exe.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+            return Path.GetFullPath(LongPath(exe)).StartsWith(root, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
