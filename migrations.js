@@ -298,6 +298,41 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    version: 9,
+    name: '看板聚合覆盖索引（聚合列进索引，扫描不再回表）',
+    up (db) {
+      // ── 为什么需要这一版 ──
+      // SQL 画像显示看板重算 209ms 里 110ms+ 花在 payments 的多次全表聚合上：
+      // scheduleAllocation 的 GROUP BY、按项目收支合计、按月流水……
+      // 已有索引只含过滤列（如 idx_payments_project 只有一列 project_id），
+      // 聚合要的 direction/amount 都得回表取宽行 —— 4 万行 × 多次。
+      //
+      // 这批「覆盖索引」把聚合列也放进索引：扫描只走窄索引、零回表。
+      // tenant_id 放在【末尾】而不是开头，是刻意的：
+      //   · 放开头：单机模式（查询不带 tenant 过滤）GROUP BY 无法借索引顺序，
+      //     要额外排序，反而变慢
+      //   · 放末尾：两种模式都是纯覆盖扫描 —— 单机不需要过滤；多租户的
+      //     tenant_id 过滤在扫描时顺带完成，同样零回表
+      // 代价：payments 多 3 个索引，每次插入多写 3 棵 B 树（微秒级），
+      // 换看板重算从 209ms 降下来 —— 读是 28% 流量，写只有 6%。
+      const idx = (name, table, cols) => {
+        try { db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON "${table}"(${cols.join(', ')});`) }
+        catch (e) { if (!/no such table|does not exist/i.test(String(e && e.message))) throw e; }
+      };
+      // 收付款：按项目+方向合计（scheduleAllocation / 项目收支 / 冲抵）
+      idx('idx_payments_agg', 'payments', ['project_id', 'direction', 'amount', 'tenant_id']);
+      // 收付款：按月流水（substr(pay_date,1,7) 分组；索引按 pay_date 有序，免排序）
+      idx('idx_payments_ym', 'payments', ['pay_date', 'direction', 'amount', 'tenant_id']);
+      // 收付款：发票勾稽 / invoicePaidMap（按 invoice_id 分组合计）
+      idx('idx_payments_invoice_amt', 'payments', ['invoice_id', 'amount', 'tenant_id']);
+      // 发票：按项目+方向合计（项目台账 / 看板开票额）
+      idx('idx_invoices_agg', 'invoices', ['project_id', 'direction', 'total_amount', 'tenant_id']);
+      // 费用：科目排行 + 项目成本合计
+      idx('idx_expenses_cat', 'expenses', ['category', 'amount', 'tenant_id']);
+      idx('idx_expenses_agg', 'expenses', ['project_id', 'amount', 'amount_ex_tax', 'tenant_id']);
+    },
+  },
 ];
 
 const TABLE = 'schema_migrations';
