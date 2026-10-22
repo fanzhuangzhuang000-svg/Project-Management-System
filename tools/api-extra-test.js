@@ -154,6 +154,32 @@ const j = async (r) => { try { return await r.json() } catch { return {} } };
     // 复原，别把测试值留在库里
     await apost('/api/settings', { settings: { backup_share: '', license_key: '' } });
 
+    // ================= 4.5 驾驶舱按权限裁剪 =================
+    //
+    // 这一节盯的是一类「正则表达式的错别字」型 BUG：
+    // dashboardFor() 里原本写着
+    //   for (const k of [... 'month_in', 'month_out']) d.totals[k] = null;
+    // 但 month_in / month_out 是**顶层**字段，压根不在 totals 里 ——
+    // 于是循环什么也没清，没有收付款读权限的账号照样在首页看到「本月已回款 X 万」。
+    // 代码不报错、页面上也没异常，只有拿受限账号请求一次才看得出来。
+    console.log('\n[4.5] 驾驶舱：没有收付款读权限就看不到金额');
+    const u4b = await mkUser({ read: ['projects', 'contracts'], write: [] }, 'dash');
+    const dashLim = await (await fetch(BASE + '/api/dashboard', { headers: u4b.H })).json();
+    const LT = dashLim.totals || {};
+    check('没有收付款读权限 → 本月回款不给', dashLim.month_in === null || dashLim.month_in === undefined,
+      JSON.stringify(dashLim.month_in));
+    check('没有收付款读权限 → 本月付款不给', dashLim.month_out === null || dashLim.month_out === undefined,
+      JSON.stringify(dashLim.month_out));
+    check('没有收付款读权限 → 已收款/应收为 null', LT.paid_in === null && LT.receivable === null,
+      `paid_in=${JSON.stringify(LT.paid_in)} receivable=${JSON.stringify(LT.receivable)}`);
+    check('没有收付款读权限 → 月度资金流清空', Array.isArray(dashLim.monthly) && dashLim.monthly.length === 0,
+      `${(dashLim.monthly || []).length} 个月`);
+    // 反面对照：管理员同一次请求里必须拿得到，证明上面不是「字段本来就没有」
+    const dashAdmin = await (await af('/api/dashboard')).json();
+    check('管理员同名字段有值（对照）',
+      typeof dashAdmin.month_in === 'number' && typeof dashAdmin.totals?.paid_in === 'number',
+      `month_in=${dashAdmin.month_in} paid_in=${dashAdmin.totals?.paid_in}`);
+
     // ================= 5. 破坏性操作必须留痕 =================
     console.log('\n[5] 破坏性操作写审计日志');
     await apost('/api/logs/purge', { days: 3650 });

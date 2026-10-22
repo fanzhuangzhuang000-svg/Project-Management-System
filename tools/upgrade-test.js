@@ -105,7 +105,14 @@ async function main () {
     check('逐笔挂账数已增加', (d2.totals.linked_count || 0) >= (t0.linked_count || 0),
       `${t0.linked_count || 0} → ${d2.totals.linked_count || 0}`);
     // 精确关联验证：手工把一笔款挂到一张票上，票的已收付应增加
-    const pjt = (await j('/api/list/invoices')).j.rows.find(r => r.unpaid_amount > 10000);
+    //
+    // ⚠️ 优先挑「还有余额」的票，但**不能只认这一种**：
+    // 上面刚跑过自动关联，示例数据里的票完全可能已经被挂满（unpaid_amount = 0）。
+    // 那时这里会走到 else 分支报「找不到有余额的发票」——
+    // 看着像产品坏了，其实只是测试对数据状态有隐含依赖。
+    // 本条断言要验的是「手工指定 invoice_id 后该票已收付 +金额」，跟余额没关系。
+    const invRows = (await j('/api/list/invoices')).j.rows || [];
+    const pjt = invRows.find(r => r.unpaid_amount > 10000) || invRows[0];
     if (pjt) {
       const pay = await post('/api/save/payments', {
         project_id: pjt.project_id, contract_id: pjt.contract_id, invoice_id: pjt.id,

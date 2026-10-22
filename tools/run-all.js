@@ -162,6 +162,11 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 批量删除 dryRun、附件 inline 预览 —— 这些之前一条断言都没有。
     // 同时压四个越权口子：暂存附件归属、回收站还原、导入目标表、设置脱敏。
     ['低频接口与越权', 'api-extra-test.js'],
+    // 口径一致性 / 原子性：把「同一个业务事实」从两个入口各取一次必须相等。
+    // 起源是三个只有横向对照才露馅的 BUG：回款率排行把付款算进收款、
+    // 闰日合同的质保金到期日溢出到 3 月 1 号、发票自动挂账方向反了。
+    // 这类问题不报错、不崩溃，单看任何一个页面都挑不出毛病。
+    ['口径一致性与原子性', 'consistency-test.js'],
   ];
   head(`3/6  主程序测试（${SUITES.length} 套件）`);
   let suitePass = 0, suiteTotal = 0, skipped = 0;
@@ -246,11 +251,55 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
 
   // ---------- 6. 安装包验证 ----------
   head('6/6  安装包验证');
-  if (CI) {
-    // verify-installer / verify-overwrite 要上传 contract.pdf 验证识别引擎，
-    // 素材不入库 → CI 上必然红。这里如实标成"没跑"，不假装通过。
-    skip('常规验证（装→跑→卸）', '需 fixtures/contract.pdf');
-    skip('覆盖安装（服务在跑时覆盖）', '需 fixtures/contract.pdf');
+  //
+  // 跳过与否只看两件**具体的事**，不能因为「在 CI 里」就一律跳过：
+  //   ① 有没有安装包 exe —— 没打包就没法装
+  //   ② 有没有识别素材 —— 装机验证要传一份合同扫描件走完整的 OCR 链路
+  // 素材现在是合成件、随仓库入库（tools/fixtures/），所以 ② 在 CI 上也是满足的。
+  const exeForVerify = require('./installer-path.js').findInstaller();
+  const fixturePdf = path.join(ROOT, 'tools', 'fixtures', 'contract.pdf');
+
+  /**
+   * 目录里最新的文件时间（递归）。
+   * 用来判断「安装包是不是比源码还旧」—— 旧包装出来的是旧程序，
+   * 拿它当验证对象等于验证上一版的代码，报出来的红绿都不算数。
+   */
+  function newestMtime (dir) {
+    let max = 0;
+    let stack = [dir];
+    while (stack.length) {
+      const cur = stack.pop();
+      let ents;
+      try { ents = fs.readdirSync(cur, { withFileTypes: true }) } catch { continue }
+      for (const e of ents) {
+        const p = path.join(cur, e.name);
+        if (e.isDirectory()) { if (e.name !== 'node_modules') stack.push(p); continue }
+        try { max = Math.max(max, fs.statSync(p).mtimeMs) } catch { /* 忽略 */ }
+      }
+    }
+    return max;
+  }
+  const srcMtime = Math.max(
+    newestMtime(path.join(ROOT, 'web', 'src')),
+    newestMtime(path.join(ROOT, 'public')),
+    ...['server.js', 'db.js', 'auth.js', 'ai.js', 'attachments.js'].map(f => {
+      try { return fs.statSync(path.join(ROOT, f)).mtimeMs } catch { return 0 }
+    }),
+    (() => { try { return fs.statSync(path.join(ROOT, 'tools', 'build-installer.js')).mtimeMs } catch { return 0 } })(),
+  );
+  const exeStale = exeForVerify && fs.existsSync(exeForVerify) && fs.statSync(exeForVerify).mtimeMs < srcMtime;
+
+  if (!exeForVerify || !fs.existsSync(exeForVerify)) {
+    skip('常规验证（装→跑→卸）', '还没打安装包；先跑 npm run dist 或 node tools/build-installer.js');
+    skip('覆盖安装（服务在跑时覆盖）', '还没打安装包；同上');
+  } else if (exeStale) {
+    // 这一步以前不存在，代价是「改了安装脚本但没重新打包」时，
+    // 验证跑的是上一次的包 —— 要么假绿（旧包刚好没问题），要么假红（旧包的毛病）。
+    skip('常规验证（装→跑→卸）', '安装包比源码旧，先重新打包（node tools/build-installer.js）');
+    skip('覆盖安装（服务在跑时覆盖）', '安装包比源码旧，同上');
+  } else if (!fs.existsSync(fixturePdf)) {
+    skip('常规验证（装→跑→卸）', '缺识别素材 tools/fixtures/contract.pdf（跑 node tools/fixtures/make-fixtures.js 生成）');
+    skip('覆盖安装（服务在跑时覆盖）', '缺识别素材 tools/fixtures/contract.pdf');
   } else {
     {
       const r = runNode(path.join('tools', 'verify-installer.js'));
