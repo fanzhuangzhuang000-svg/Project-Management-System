@@ -275,6 +275,29 @@ const MIGRATIONS = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_trash_tenant ON trash(tenant_id);');
     },
   },
+  {
+    version: 8,
+    name: '清理超出 JS 安全整数范围的 record_id（会让日志页永久 500）',
+    up (db) {
+      // ── 为什么需要这一版 ──
+      // 旧版本写日志时是 `entry.record_id ? parseInt(entry.record_id, 10) : null`。
+      // 请求里带一个超大编号（例如 /api/delete/projects/9007199254740993）时，
+      // parseInt 会舍入成 9007199254740992 存进库 —— 超过 2^53 之后，
+      // node:sqlite 读回来时抛 "Value is too large to be represented as a
+      // JavaScript number"，于是 /api/logs 和首页系统通知**永久 500**。
+      // 重启也不会好，因为脏数据在库里。
+      //
+      // 现在新写入已经被 logs.js 拦住了（只存安全整数），这一版负责把
+      // 已经中招的库治好：这些记录的编号本来也没有意义（对应的记录早就不存在）。
+      const MAX = Number.MAX_SAFE_INTEGER;
+      try {
+        db.exec(`UPDATE logs SET record_id = NULL WHERE record_id > ${MAX} OR record_id < -${MAX};`);
+      } catch (e) {
+        // 表不存在（极早期库）之类的情况不该让迁移失败
+        if (!/no such table|does not exist/i.test(String(e && e.message))) throw e;
+      }
+    },
+  },
 ];
 
 const TABLE = 'schema_migrations';

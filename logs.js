@@ -33,13 +33,19 @@ function createTable () {
 /** 记录一条日志（永远不抛错，日志失败不能影响业务） */
 function log (entry) {
   try {
+    // record_id 必须落在 JS 安全整数范围内。
+    // 超过 2^53 的值（比如 URL 里写 9007199254740993）会被 parseInt 舍入成
+    // 9007199254740992 存进库；之后 list() 读回来时 node:sqlite 直接抛
+    // "Value is too large to be represented as a JavaScript number" ——
+    // 一条日志就能让整个日志页 / 系统通知永久 500。
+    const rid = Number(entry.record_id);
     db.prepare(`INSERT INTO logs (at, operator, action, table_name, record_id, label, summary, detail)
       VALUES (?,?,?,?,?,?,?,?)`).run(
       nowISO(),
       entry.operator || null,
       entry.action || 'other',
       entry.table_name || null,
-      entry.record_id ? parseInt(entry.record_id, 10) : null,
+      Number.isSafeInteger(rid) && rid > 0 ? rid : null,
       entry.label || null,
       entry.summary || null,
       entry.detail ? JSON.stringify(entry.detail).slice(0, 4000) : null,
@@ -93,7 +99,23 @@ function list (opts = {}) {
   if (opts.since) { where.push('at >= ?'); params.push(opts.since); }
   const whereSQL = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const limit = Math.min(parseInt(opts.limit, 10) || 200, 1000);
-  const rows = db.prepare(`SELECT * FROM logs ${whereSQL} ORDER BY id DESC LIMIT ?`).all(...params, limit);
+  let rows;
+  try {
+    rows = db.prepare(`SELECT * FROM logs ${whereSQL} ORDER BY id DESC LIMIT ?`).all(...params, limit);
+  } catch (e) {
+    /**
+     * 历史脏数据兜底：万一库里已经存了超过 2^53 的 record_id（旧版本没有上限校验，
+     * 一次带超大 id 的请求就能写进去），node:sqlite 转换时会抛错，
+     * 一条记录就让整个日志页 500，而且重启也不会好 —— 脏数据在库里。
+     * 这里退回"按文本读 record_id"的查询，页面照常可用；
+     * 迁移 v8 会把这类脏值清成 NULL。
+     */
+    if (!/too large|JavaScript number/i.test(String(e && e.message))) throw e;
+    console.log('[日志] 检测到超范围的 record_id，已按文本读取（迁移 v8 会清理）');
+    rows = db.prepare(`SELECT id, at, operator, action, table_name,
+        CAST(record_id AS TEXT) AS record_id, label, summary, detail
+      FROM logs ${whereSQL} ORDER BY id DESC LIMIT ?`).all(...params, limit);
+  }
   return { rows: rows.map(r => ({ ...r, actionLabel: ACTION_LABEL[r.action] || r.action })), total: rows.length };
 }
 

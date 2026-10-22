@@ -122,6 +122,26 @@ function sendJSON (res, code, obj) {
  */
 const bodyFail = (res, e) => sendJSON(res, e && e.code === 'TOOBIG' ? 413 : 400, { error: (e && e.message) || '请求格式错误' });
 
+/**
+ * 把 URL / 请求体里的编号转成**安全整数**，不合法返回 null。
+ *
+ * ⚠️ 这条不是洁癖，是实测踩出来的：
+ *    `parseInt('9007199254740993')` 会得到 9007199254740992（超出 2^53，被舍入）。
+ *    这个值再写进 logs.record_id 之后，**整个日志接口永久 500** ——
+ *    node:sqlite 读回超过 2^53 的整数时直接抛
+ *      Value is too large to be represented as a JavaScript number
+ *    于是「操作日志」页面和首页的系统通知全部打不开，且重启也不会好
+ *    （脏数据在库里）。任何一个登录用户都能用一次带超大 id 的请求造成这个后果。
+ *
+ * 只认十进制正整数、最多 15 位（15 位必然 < 2^53），别的一律当非法。
+ */
+function idOf (v) {
+  const s = String(v === undefined || v === null ? '' : v).trim();
+  if (!/^\d{1,15}$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 function readBody (req, limit = 4 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -1825,8 +1845,16 @@ async function handleApi (req, res, url) {
     // 附件必须先于业务数据处理：子记录删掉后就找不到挂在它们身上的附件了。
     // keepAttachments=1 表示只删记录、把扫描件留在附件库里（解除关联，不会被自动清理）
     const keep = !!body.keepAttachments;
-    const numId = parseInt(b, 10);
-    const label = recordLabel(a, dbf.db.prepare(`SELECT * FROM ${a} WHERE id = ?`).get(numId));
+    const numId = idOf(b);
+    if (numId === null) return sendJSON(res, 400, { error: '编号不正确' });
+    const target = dbf.db.prepare(`SELECT * FROM ${a} WHERE id = ?`).get(numId);
+    // 记录不存在就直接 404。
+    // 以前这里不管存不存在都会往下走：先在回收站写一条"快照"（内容是空的），
+    // 再写一条删除日志，最后才由 deleteRow 影响 0 行 —— 接口回 200，
+    // 用户看到"已删除"，回收站里多出一条点开什么都没有的条目，
+    // 而那条日志里的 record_id 如果是个超大数，还会把日志页搞崩。
+    if (!target) return sendJSON(res, 404, { error: '记录不存在（可能已被别人删掉，刷新看一下）' });
+    const label = recordLabel(a, target);
 
     // 先做快照存进回收站（30 天内可还原）
     let trashId = null;
@@ -2208,12 +2236,47 @@ console.log('  写入模式:   ' + (dbf.dialect === 'postgres'
 // 每 15 分钟做一次 PASSIVE checkpoint，避免 WAL 一直增长（不影响读写）
 setInterval(() => { dbf.checkpoint('PASSIVE'); }, 15 * 60 * 1000).unref();
 
-server.on('error', e => {
-  if (e.code === 'EADDRINUSE') {
-    console.error(`\n[错误] 端口 ${PORT} 已被占用。请改用其它端口，例如：node server.js --port 8899\n`);
-  } else {
+server.on('error', async e => {
+  if (e.code !== 'EADDRINUSE') {
     console.error('[错误]', e.message);
+    process.exit(1);
   }
+  /**
+   * 端口被占 —— 先搞清楚占着它的是谁。
+   *
+   * 用户遇到的绝大多数情况其实是**本系统自己已经开着**：
+   *   · 开机自启 + 自己又双击了一次「启动系统.bat」
+   *   · 覆盖安装后旧进程还没退干净
+   *   · 上次那个黑窗口被最小化到任务栏，以为关了
+   * 以前这里一律报「端口已被占用，请改用其它端口」然后退出 ——
+   * 用户看到的是"打不开系统"，实际系统一直好好跑着，浏览器地址也一样能用。
+   * 所以：问一句 /api/health，比对 dbId（不靠端口猜）。
+   */
+  let who = null;
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/health`, { signal: AbortSignal.timeout(1500) });
+    who = await r.json();
+  } catch { /* 不是 HTTP 服务，或者超时 */ }
+
+  if (who && who.app && who.dbId === DB_ID) {
+    console.log('');
+    console.log('  本系统已经在运行了（同一个数据库），不需要再启动一次。');
+    console.log('  直接用浏览器打开： http://127.0.0.1:' + PORT);
+    console.log('  这个窗口可以直接关掉，不会影响正在运行的那个。');
+    console.log('');
+    process.exit(0);
+  }
+  if (who && who.app) {
+    console.error(`\n[错误] 端口 ${PORT} 上已经有一个本系统在跑，但它用的**不是**这个数据目录。`
+      + '\n       两个副本不能共用同一个端口。二选一：'
+      + '\n         · 要用现在这一份数据 → 先关掉那个实例（它可能开在另一个窗口/另一台机器上）'
+      + `\n         · 要两个同时跑 → node server.js --port 8900`
+      + '\n       不确定那个是哪个库？在那个窗口里看启动横幅第一屏，或进系统看「系统设置 → 数据位置」。\n');
+    process.exit(1);
+  }
+  console.error(`\n[错误] 端口 ${PORT} 被别的程序占用了（不是本系统）。`
+    + '\n       换个端口再启动：node server.js --port 8900'
+    + '\n       （用「启动系统.bat」的话，可以先关掉占用 8787 的那个程序）\n');
   process.exit(1);
 });
 

@@ -847,6 +847,9 @@ sudo apt install postgresql-client
 **还原前必须先停服务** —— 覆盖一个正在被使用的数据库，SQLite 会锁死、PG 会写坏。
 还原工具本身不负责停服务，因为它跑的时候服务多半还活着。
 
+工具现在会**自己检查**这件事：服务还在跑（或者库文件还被占着）就直接拒绝，
+并告诉你该怎么停。确认服务确实停了却仍被拦住时，加 `--force` 跳过检查。
+
 ```bash
 # Linux / 裸机
 sudo systemctl stop elv-pms
@@ -854,9 +857,15 @@ sudo -u elv-pms node /opt/elv-pms/tools/restore-backup.js            # 用最新
 sudo -u elv-pms node /opt/elv-pms/tools/restore-backup.js pms_20261007_031700.db  # 指定某份
 sudo systemctl start elv-pms
 
-# Windows 单机版：先把「启动系统」窗口关掉，再跑
+# Windows 单机版：先双击「停止系统.bat」（或关掉那个黑色窗口），等两三秒，再跑
 node tools\restore-backup.js
 ```
+
+> ⚠️ 这一条是踩出来的，别删：以前工具只打印一句「请先停止服务」就直接覆盖文件。
+> Windows 上只要还有句柄，删文件会失败 —— 而那个失败被空 `catch` 吞掉了，
+> 结果是 `pms.db` 没删、旧的 `pms.db-wal` 也没删，服务一启动就把还原前的数据
+> 回放回去。**命令行打印「✓ 已还原」、数据却一点没变。**
+> 现在：先关掉自己的连接 → 探测占用 → 有占用或删不掉就中止并说明原因。
 
 工具会先把**当前**数据另存为 `..._before-restore.db` 再动手，还原错了还能退回去。
 

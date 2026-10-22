@@ -224,6 +224,10 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 接口健壮性：请求体是 JSON 的 null / "abc" / 123、脏 ID、5 MB 请求体。
     // 以前这些都会 500 并把英文异常原文弹给用户，超限则直接掐连接（fetch failed）。
     ['接口健壮性', 'robustness-test.js'],
+    // 备份 → 改数据 → 停服 → 还原 → 复查。这套自己起服务（还原要求先停服务）。
+    // 起源：还原工具在 Windows 上**从未真正生效**过 —— 自己开着库导致 unlink 被
+    // 空 catch 吞掉，旧 -wal 回放把数据退回去，而界面/命令行都显示"还原成功"。
+    ['备份与还原', 'restore-test.js'],
   ];
   head(`3/6  主程序测试（${SUITES.length} 套件）`);
   let suitePass = 0, suiteTotal = 0, skipped = 0;

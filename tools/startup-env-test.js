@@ -85,8 +85,7 @@ async function startServer (dataDir, env, port) {
   throw new Error('测试实例没起来：\n' + log.slice(-1500));
 }
 
-async function stopServer (srv) {
-  if (!srv || !srv.child) return;
+async function stopServer (srv) {  if (!srv || !srv.child) return;
   try { srv.child.kill(); } catch { /* 忽略 */ }
   // Windows 上 kill 之后句柄要一点时间才真释放，不等的话下一次同目录启动会摸到锁
   for (let i = 0; i < 40 && srv.child.exitCode === null; i++) await sleep(100);
@@ -100,6 +99,27 @@ async function tryLogin (base, password, username = 'admin') {
     body: JSON.stringify({ username, password }),
   });
   return { status: r.status, body: await r.json().catch(() => ({})) };
+}
+
+/**
+ * 起一个实例，一直等到它**自己退出**，收集它打印的内容。
+ * 用来测"端口被占时怎么收场"—— 那种情况不会长时间运行，就是要看退出码和话术。
+ */
+function runTillExit (dataDir, env, port, timeoutMs = 30000) {
+  return new Promise(resolve => {
+    fs.mkdirSync(dataDir, { recursive: true });
+    const child = spawn(process.execPath, ['--no-warnings', path.join(ROOT, 'server.js')], {
+      cwd: ROOT,
+      env: { ...process.env, PMS_PORT: String(port), PMS_DATA_DIR: dataDir, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let out = '';
+    child.stdout.on('data', d => { out += d });
+    child.stderr.on('data', d => { out += d });
+    const timer = setTimeout(() => { try { child.kill() } catch { /* 忽略 */ } }, timeoutMs);
+    child.on('exit', code => { clearTimeout(timer); resolve({ code, out }) });
+  });
 }
 
 (async () => {
@@ -204,6 +224,36 @@ async function tryLogin (base, password, username = 'admin') {
           /管理员初始密码设置失败/.test(srv.readLog()) || /密码已按 \.env 设置/.test(srv.readLog()),
           '既没说失败也没说成功');
       } finally { await stopServer(srv); }
+    }
+    // ──────────────────────────────────────────────
+    console.log('\n [5] 端口被占时：先认亲，再报错');
+    // ──────────────────────────────────────────────
+    // 用户遇到的"打不开系统"，多数情况其实是**上一次那个实例还开着**
+    // （开机自启 + 又双击了一次、覆盖安装后旧进程没退、窗口被最小化）。
+    // 以前一律报"端口已被占用，请改用其它端口"然后退出 —— 用户以为系统坏了。
+    {
+      const dirA = path.join(TMPROOT, 'portA');
+      const dirB = path.join(TMPROOT, 'portB');
+      const port = await freePort();
+      const srvA = await startServer(dirA, {}, port);
+      try {
+        // 同一个数据目录再起一个：应该友好地告诉用户"已经在跑了"
+        const same = await runTillExit(dirA, {}, port);
+        check('同一个库重复启动：不报错，提示已经在运行', same.code === 0 && /已经在运行/.test(same.out),
+          `退出码 ${same.code}｜${same.out.slice(-120).replace(/\s+/g, ' ')}`);
+        check('提示里给出了能直接打开的地址', /http:\/\/127\.0\.0\.1:\d+/.test(same.out));
+
+        // 另一个数据目录抢同一个端口：必须报错，而且要说清是"另一个副本"
+        const other = await runTillExit(dirB, {}, port);
+        check('另一个副本抢同一端口：明确报错（退出码非 0）', other.code !== 0, '退出码 ' + other.code);
+        check('报错说清是另一个数据目录的实例，并给了换端口的办法',
+          /数据目录/.test(other.out) && /--port/.test(other.out),
+          other.out.slice(-160).replace(/\s+/g, ' '));
+
+        // 原来那个实例不能受影响
+        const alive = await fetch(srvA.base + '/api/health').then(r => r.ok).catch(() => false);
+        check('原来那个实例没被挤掉', alive === true);
+      } finally { await stopServer(srvA); }
     }
   } catch (e) {
     check('测试过程未抛异常', false, e.message);

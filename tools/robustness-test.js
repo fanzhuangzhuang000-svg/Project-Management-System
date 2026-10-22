@@ -160,7 +160,38 @@ const leaks = (text) => LEAK_MARKS.some(m => text.includes(m))
   }
 
   // ───────────────────────────────────────────────
-  console.log('\n [5] 折腾完这一圈，服务还好好的吗');
+  console.log('\n [5] 超大编号：不能写进库，更不能把日志接口搞挂');
+  // ───────────────────────────────────────────────
+  // 真实故障（本套件自己的脏 ID 用例挖出来的）：
+  //   POST /api/delete/projects/9007199254740993
+  //   → parseInt 舍入成 9007199254740992 写进 logs.record_id
+  //   → node:sqlite 读回时抛 "Value is too large to be represented as a
+  //     JavaScript number"
+  //   → /api/logs 与首页系统通知**永久 500**，重启也不好（脏数据在库里）。
+  //   任何一个登录用户一次请求就能做到。
+  {
+    const parse = (r) => { try { return JSON.parse(r.text) } catch { return {} } };
+    const trashBefore = (parse(await hit('GET', '/api/trash')).rows || []).length;
+
+    const big = await hit('POST', '/api/delete/projects/9007199254740993', {});
+    check('超大编号被拒（不是 200）', big.status === 400 || big.status === 404, `HTTP ${big.status} ${big.text.slice(0, 80)}`);
+
+    const logs = await hit('GET', '/api/logs');
+    check('之后的日志接口仍然正常（没有把超范围整数写进 record_id）',
+      logs.status === 200, `HTTP ${logs.status} ${logs.text.slice(0, 100)}`);
+
+    const trashAfter = (parse(await hit('GET', '/api/trash')).rows || []).length;
+    check('回收站没有多出一条点开什么都没有的空条目', trashAfter === trashBefore, `${trashBefore} → ${trashAfter}`);
+
+    const ghost = await hit('POST', '/api/delete/projects/999999', {});
+    check('删不存在的记录回 404，而不是"假成功"', ghost.status === 404, `HTTP ${ghost.status} ${ghost.text.slice(0, 60)}`);
+
+    const neg = await hit('POST', '/api/delete/projects/-5', {});
+    check('负数编号被拒', neg.status === 400 || neg.status === 404, 'HTTP ' + neg.status);
+  }
+
+  // ───────────────────────────────────────────────
+  console.log('\n [6] 折腾完这一圈，服务还好好的吗');
   // ───────────────────────────────────────────────
   {
     const h = await hit('GET', '/api/health');
