@@ -1,12 +1,16 @@
 name: CI
 
 # 每次推送和 PR 都跑。
-# 跑的是 tools/run-all.js --ci：跳过 9 个"干净克隆跑不起来"的套件（原因见
-# run-all.js 里 CI_SKIP 的注释），剩下的必须全绿。
+# 跑的是 tools/run-all.js --ci：除「需要 PG+MinIO 栈」和「需要先打包」这两项外，
+# 所有套件都必须真跑真绿。跳过的项会在报告里单独列出来（⊘），不计入通过。
 #
 # 为什么需要它：这套系统三套环境（Windows 单机 / Docker / Linux 裸装）
 # 之前全靠本机手工验证，改完代码没人拦。而"本机有夹具素材、CI 没有"
 # 正是最容易漏的一类回归。
+#
+# 2026-10 之前这份配置有个更隐蔽的问题：run-all 把「跳过」记成了「通过」，
+# 于是 9 个从没执行过的套件让报告一直是全绿的。现在素材改成合成件入库，
+# 那 9 个已经全部接回 CI。
 
 on:
   push:
@@ -49,13 +53,30 @@ jobs:
       - name: 跑验证
         env:
           PMS_CI: '1'
-        run: node tools/run-all.js --ci http://127.0.0.1:8787
+          # run-all.js 只认环境变量 PMS_BASE，不读位置参数。
+          # 原来写的是 `run-all.js --ci http://127.0.0.1:8787` —— 那个地址一直被忽略，
+          # 只是碰巧和默认值相同所以没暴露。真要换端口时会静默打到错误的地方。
+          PMS_BASE: http://127.0.0.1:8787
+        run: node tools/run-all.js --ci
 
       - name: 打交付包（三平台）
         run: node tools/build-artifacts.js
 
       - name: 校验交付包内容
         run: node tools/verify-artifacts.js
+
+      # 装机验证必须在"打完包"之后：它装的是真的 exe，不是仓库里的代码。
+      # 这一步以前一直缺席，导致「装完能不能跑」只有人工验证 ——
+      # 而打包漏文件这类事故恰恰只在这一步暴露（踩过一次：新模块没进包，装完一点就崩）。
+      # 三个脚本都通过 tools/installer-path.js 自动去 dist-artifacts 找
+      # *-windows-standalone.exe（build-artifacts 会把 exe 改名挪过去）。
+      - name: 装机验证（真实安装包）
+        run: node tools/verify-installed.js
+
+      - name: 安装/卸载/覆盖安装端到端
+        run: |
+          node tools/verify-installer.js
+          node tools/verify-overwrite.js
 
       - uses: actions/upload-artifact@v4
         with:

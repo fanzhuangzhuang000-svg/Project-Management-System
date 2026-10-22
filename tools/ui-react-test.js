@@ -4,7 +4,27 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const T = require('./test-auth.js');
 const BASE = process.argv[2] || process.env.PMS_BASE || T.BASE;   // 可传参指向临时测试服'
-const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+/**
+ * 浏览器路径不再写死。
+ *
+ * 原来硬编码 `C:\Program Files (x86)\Microsoft\Edge\...`，只有在装了 Edge 的
+ * Windows 上才跑得起来 —— 换台机器就变成"spawn 失败 → 等 15 秒 → 一堆假失败"。
+ * CI 的 windows-latest 里 Edge 确实存在，但位置可能是 Program Files 而不是 (x86)，
+ * 所以按候选列表逐个探测，PMS_BROWSER 可以显式指定。
+ */
+const EDGE = (() => {
+  const cands = [
+    process.env.PMS_BROWSER,
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/microsoft-edge',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ].filter(Boolean);
+  for (const p of cands) { try { if (fs.existsSync(p)) return p } catch { /* 忽略 */ } }
+  return null;
+})();
 const PORT = 9530;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -15,6 +35,12 @@ const check = (name, ok, extra = '') => {
 };
 
 (async () => {
+  // 没有浏览器就明确说"跑不了"，交给 run-all 记为未执行。
+  // 绝不能让测试退化成"少跑几十条但汇总看着全绿"。
+  if (!EDGE) {
+    console.log('SKIP: 本机没有 Edge/Chrome（可用 PMS_BROWSER 指定路径），界面回归未执行');
+    process.exit(0);
+  }
   T.forceAdminPassword();
   const prof = path.join(os.tmpdir(), 'pms_react');
   fs.rmSync(prof, { recursive: true, force: true });
@@ -770,9 +796,11 @@ const check = (name, ok, extra = '') => {
       {
         // 自己传一份扫描件（前面的用例会清理掉它自己的附件），保证不依赖别的用例留下的状'
         const token = await T.login()
-        const buf = fs.readFileSync(path.join(__dirname, 'fixtures', 'contract-scan.jpg'))
+        const buf = fs.readFileSync(path.join(__dirname, 'fixtures', 'contract-scan.png'))
         const fd = new FormData()
-    fd.append('file', new Blob([buf], { type: 'image/jpeg' }), 'UIRAWTEST-合同扫描件.jpg')
+    // 素材是 png，就按 png 传。原来这里写死 image/jpeg + .jpg ——
+    // 文件内容和扩展名对不上，靠 OCR 端自动嗅探才没出事，属于蒙对。
+    fd.append('file', new Blob([buf], { type: 'image/png' }), 'UIRAWTEST-合同扫描件.png')
         const up = await fetch(BASE + '/api/upload', {
           method: 'POST', headers: { Cookie: 'pms_session=' + token }, body: fd,
         }).then(r => r.json())
@@ -848,9 +876,14 @@ const check = (name, ok, extra = '') => {
             check('归一化后字间空格被去',
               normText2.includes('合同编号') && !/合\s+同\s+编\s+号/.test(normText2),
               String(normText2.split('\n')[1] || '').trim().slice(0, 40))
-            // 这一份的金额在扫描件里就是这种情况：千分位少一个逗号 —— 正是当初把合法金额拒掉的原因
-            check('OCR 原文里能直接看到「5,860000,00」这种千分位错位',
-              /5\s*[,，]?\s*860000/.test(rawText), '对着原文就能判断是扫描件的问题，还是规则的问题')
+            // 这一条原来断言的是「原文里能看到 5,860000,00 这种千分位错位」——
+            // 那是在断言**某一份真实扫描件的识别噪声**，不是在断言产品行为。
+            // 换成合成素材后 OCR 读得干干净净，它就必然失败，而且失败得毫无信息量：
+            // 产品没坏，只是那份扫描件的错法不一样了。
+            // 真正要保证的是「用户点开原文，能自己核对到底是识别错了还是规则错了」，
+            // 所以改成：原文里必须能看到金额的数字串（带不带千分位都算）。
+            check('OCR 原文里能看到合同金额，可据此判断是识别问题还是规则问题',
+              /5[\s,，]*860[\s,，]*000/.test(rawText), '原文含金额数字串')
           }
 
           check('列出了各字段的出处片', await ev(`document.body.innerText.includes('各字段的出处')`))

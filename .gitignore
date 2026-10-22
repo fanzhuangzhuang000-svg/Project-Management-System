@@ -67,23 +67,29 @@ screenshots/
 ui-验证截图/
 
 # ══════════════════════════════════════════════════════════════
-#  测试夹具 —— 只入库生成脚本，素材本身不入库
+#  测试夹具
 # ══════════════════════════════════════════════════════════════
-# 为什么要这么严：
-#   tools/fixtures/ 里是**真实合同的扫描件与导出文件**（含真实企业名、
-#   真实路名、真实金额）。哪怕仓库是私有的，这些也不该进版本历史 ——
-#   以后仓库一旦转公开、或被人 fork，删文件也追不回来。
+# 现在**入库**了，因为素材全部改成了合成件：虚构的单位名、写死的编号、
+# 生成脚本就在 tools/fixtures/make-fixtures.js 里，谁都能重跑一遍得到同样的文件。
 #
-#   替代方案：素材由 make-fixtures.py 等脚本生成，脚本入库、素材不入库。
-#   clone 后跑一次脚本即可恢复测试素材。
+# 以前不入库的理由是「里面是真实合同的扫描件，含真实企业名和金额」——
+# 那个理由是真的，代价也是真的：干净克隆和 CI 上有 9 个套件因此跑不起来，
+# 而 run-all 把「跑不起来」记成了「通过」，于是没人发现一半功能区是暗的。
+# 换成合成件以后这两个问题一起消失。
 #
-# ⚠️ 代价（必须知道）：14 个测试文件引用 fixtures，其中 4 个**没有**缺文件兜底
-#   （import-test / ocr-chain-test / ui-react-test / ocr-selftest），
-#   没跑生成脚本就跑 npm test，这几个会因找不到素材而报错。
-#   详见 CONTRIBUTING.md「准备测试素材」一节。
-tools/fixtures/*
-!tools/fixtures/make-fixtures.py
-!tools/fixtures/README.md
+# 仍然排除的是渲染中间产物：
+tools/fixtures/.tmp/
+# 老脚本已被 make-fixtures.js 取代（openpyxl 在 CI 上装不出来）
+tools/fixtures/make-fixtures.py
+
+# 上面那几条 `*.pdf` / `*.xlsx` 是按「真实业务文件」写的，会把测试素材一起挡掉。
+# 素材是合成件，必须入库 —— 这里给它们开个洞。
+# 注意：开了洞以后，往 tools/fixtures/ 里放真实客户文件就挡不住了，
+# 加素材前先确认是 make-fixtures.js 生成的。
+!tools/fixtures/*.pdf
+!tools/fixtures/*.xlsx
+!tools/fixtures/*.csv
+!tools/fixtures/*.png
 
 # ══════════════════════════════════════════════════════════════
 #  编辑器与系统

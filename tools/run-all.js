@@ -32,8 +32,23 @@ function head (t) {
   console.log('  ' + '═'.repeat(58));
 }
 function row (name, ok, detail = '') {
-  rows.push({ name, ok, detail });
+  rows.push({ name, ok, detail, skipped: false });
   console.log(`    ${ok ? '✓' : '✗'} ${name.padEnd(22)} ${detail}`);
+}
+/**
+ * 记一条「没跑」。
+ *
+ * 以前这里写的是 row(name, true, '跳过') —— 跳过的项被记成通过，
+ * 汇总里那句「全部通过」也就把 9 个从没执行过的套件算进去了。
+ * 这等于判分器自己在撒谎：越是不敢跑的地方，报告越绿。
+ *
+ * 现在跳过是独立的第三种状态：不算通过、不算失败，但一定单独计数并打印，
+ * 而且必须带原因。汇总行会把「通过 / 失败 / 跳过」三个数都写出来，
+ * 想瞒也瞒不住。
+ */
+function skip (name, reason) {
+  rows.push({ name, ok: true, detail: reason, skipped: true });
+  console.log(`    ⊘ ${name.padEnd(22)} 跳过：${reason}`);
 }
 
 /** 跑一个 node 脚本，返回 stdout（不继承 stdio，避免刷屏） */
@@ -45,22 +60,25 @@ function runNode (script, args = [], timeout = 900000) {
 }
 
 /**
- * CI 模式下跳过的套件 —— 每一个都必须在干净克隆上实测过确实跑不起来。
+ * CI 模式下不跑的套件 —— 每一个都必须写明**确切原因**。
  *
  * 别把这份清单当"不重要所以跳过"：它们在本地是有意义的（装机、PG+MinIO 集成、
- * 示例数据反复重建……）。跳过只有一个原因 —— **CI 环境提供不了前提**：
+ * 示例数据反复重建……）。不跑只有一个原因 —— **CI 环境提供不了前提**。
  *
- *   · 缺夹具素材（.gitignore 排除真实扫描件，见 tools/fixtures/README.md）
- *   · 需要先产出安装包 exe（verify-installed）
- *   · 需要真实 PG + MinIO 栈（verify-pro-edition）
- *   · 需要真实 AI 密钥（ai-test）
+ * 每个条目是 file -> 原因。原因必须具体到"缺哪个文件/哪个服务"，
+ * 写"环境不具备"这种话等于没写 —— 半年后没人知道该补什么。
  *
- * 哪个套件恢复成可跑（比如素材改用脱敏件入库），从这里删掉对应行即可。
+ * 哪个套件恢复成可跑（比如素材改用合成件入库），从这里删掉对应行即可。
+ * 这份清单只允许变短。
  */
-const CI_SKIP = new Set([
-  'batch-test.js', 'import-test.js', 'features-test.js', 'ocr-chain-test.js',
-  'ui-react-test.js', 'verify-installed.js', 'verify-pro-edition.js', 'ai-test.js',
-  'reseed-atomic-test.js',
+const CI_SKIP = new Map([
+  // 需要装 PostgreSQL + MinIO 才能跑。CI 的 windows-latest 上没有这套栈，
+  // 要补就得在 workflow 里起 service container，属于另开一条集成流水线的事。
+  ['verify-pro-edition.js', '需要真实 PostgreSQL + MinIO 栈（CI 未起服务）'],
+  // 需要先产出安装包 exe。CI 的打包发生在 run-all 之后（build-artifacts），
+  // 所以这里排不进同一次运行 —— 但**不是不跑**：ci.yml 里有一个独立的
+  // 「装机验证」步骤，在打完包之后调 tools/verify-installed.js。
+  ['verify-installed.js', '需安装包 exe；由 CI 的「装机验证」步骤在打包后单独执行'],
 ]);
 const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
 
@@ -103,7 +121,8 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   }
 
   // ---------- 3. 主程序测试套件 ----------
-  head('3/6  主程序测试（27 套件）');
+  // 标题里的套件数写死过一次（写 27，实际 28），之后每次加套件都忘改 ——
+  // 报告上的数字和实际跑的对不上，正是这套判分器最容易骗人的地方。改成算出来的。
   const SUITES = [    ['登录与权限', 'auth-test.js'], ['表级越权', 'perm-test.js'],
     ['八项优化', 'upgrade-test.js'], ['性能回归', 'perf-test.js'],
     ['子系统多选', 'multi-test.js'], ['付款条款解析', 'plan-test.js'],
@@ -133,22 +152,50 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 单据进件：AI 助手收一张发票/合同/表格进来 → 判断该录到哪张表 → 方案 → 确认落库。
     // 识别结果直接写库，不跑 OCR，所以 CI 上也能跑（素材不入库）。
     ['单据进件', 'ingest-test.js'],
+    // 静态检查：调用业务模块方法时，前缀名必须真的被定义过。
+    // 起源是一个真事故：sweepLogs() 里写 `logs.purge(days)`，而导入的名字是 logmod，
+    // 那行每次都抛 ReferenceError 并被 catch 吞掉 —— 「日志保留天数」从上线起就没生效。
+    // 它不在任何请求路径上，接口测试和单元测试都碰不到，只能靠静态检查兜。
+    // 模块引用有效性：见下方说明
+    ['模块引用有效性', 'module-ref-test.js'],
+    // 低频接口与越权回归：解锁账号、清日志、清示例数据、重新匹配、计划预览、
+    // 批量删除 dryRun、附件 inline 预览 —— 这些之前一条断言都没有。
+    // 同时压四个越权口子：暂存附件归属、回收站还原、导入目标表、设置脱敏。
+    ['低频接口与越权', 'api-extra-test.js'],
   ];
+  head(`3/6  主程序测试（${SUITES.length} 套件）`);
   let suitePass = 0, suiteTotal = 0, skipped = 0;
   for (const [name, file] of SUITES) {
     if (CI && CI_SKIP.has(file)) {
       skipped++;
-      row(name + '（CI 跳过）', true, '环境不具备，见 CI_SKIP 注释');
+      skip(name, CI_SKIP.get(file));
       continue;
     }
     const t0 = Date.now();
     const r = runNode(path.join('tools', file), [BASE]);
     const sec = ((Date.now() - t0) / 1000).toFixed(0);
+    // 套件自己说「这台机器跑不了」时，必须走 SKIP 通道。
+    //
+    // 为什么要有这条：有些套件缺的是**运行时能力**（浏览器没装、中文 OCR 语言包没有），
+    // 不是缺文件，所以没法在 CI_SKIP 里静态列出来 —— 同一台机器换个环境就跑得了。
+    // 以前这种套件只能二选一：假装通过（埋雷），或直接失败（噪音）。
+    // 现在统一约定：打印 `SKIP: 原因` 并以 0 退出，由这里转成"未执行"。
+    const skipMsg = /^\s*SKIP[:：]\s*(.+)$/m.exec(r.out);
+    if (skipMsg) {
+      skipped++;
+      skip(name, skipMsg[1].trim());
+      continue;
+    }
     const m = /(\d+)\s*\/\s*(\d+) 项通过/.exec(r.out);
     if (m) {
       const p = +m[1], a = +m[2];
+      // 套件内部主动跳过的用例数（例如没有中文 OCR 语言包时的图片识别断言）。
+      // 这些不计入分母，但必须显示出来 —— 否则「31/31」看着满分，
+      // 实际有 2 条根本没跑。
+      const inner = /跳过\s*(\d+)/.exec(r.out);
+      const note = inner && +inner[1] > 0 ? `  跳过 ${inner[1]} 条` : '';
       suitePass += p; suiteTotal += a;
-      row(name, p === a, `${p}/${a}  ${sec}s`);
+      row(name, p === a, `${p}/${a}  ${sec}s${note}`);
       if (p !== a) console.log(r.out.split('\n').filter(l => l.includes('✗')).slice(0, 6).map(l => '        ' + l.trim()).join('\n'));
     } else {
       row(name, false, '✗ 未取得结果');
@@ -156,18 +203,19 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     }
   }
   console.log(`    ${'—'.repeat(40)}`);
-  console.log(`    小计 ${suitePass} / ${suiteTotal}${skipped ? `（CI 跳过 ${skipped} 个环境依赖套件）` : ''}`);
+  console.log(`    小计 ${suitePass} / ${suiteTotal}${skipped ? `（另有 ${skipped} 个套件未执行，见上方 ⊘）` : ''}`);
 
   // ---------- 4. OCR 自检 ----------
   head('4/6  OCR 自检（全部素材）');
   {
     const fix = path.join(ROOT, 'tools', 'fixtures');
-    const files = ['contract.pdf', 'contract-new.pdf', 'invoice.pdf', 'contract-scan.jpg']
+    const files = ['contract.pdf', 'contract-new.pdf', 'invoice.pdf', 'contract-scan.png']
       .map(f => path.join(fix, f)).filter(f => fs.existsSync(f));
     if (!files.length) {
       // 一份素材都没有时不能报"失败"——素材本就不入库（.gitignore），
       // 报失败会让 CI 永远红，而且看不出真实原因。
-      row('OCR 自检', true, CI ? '跳过：CI 无夹具素材' : '跳过：无素材（跑 tools/fixtures/make-fixtures.py 或自备）');
+      // 但也不能报"通过"：那会让「OCR 自检」这一整段在报告里凭空变成绿的。
+      skip('OCR 自检', '无夹具素材（tools/fixtures/ 为空）');
     } else {
       const r = runNode(path.join('tools', 'ocr-selftest.js'), files);
       const names = [...r.out.matchAll(/文件: ([^\r\n]+)/g)].map(m => path.basename(m[1].trim()));
@@ -186,12 +234,11 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   if (CI) {
     // 打包一次要 4~8 分钟（压 node.exe 83MB）。CI 里紧接着还要跑
     // build-artifacts.js 再打一遍同样的东西 —— 两遍加起来十几分钟纯浪费。
-    // 这里如实标成"交给下一步"，不假装通过。
-    row('生成安装包', true, 'CI 跳过：由 build-artifacts.js 统一打（避免重复压缩）');
+    // 这里如实标成"没跑"，不假装通过。
+    skip('生成安装包', '本步让给 build-artifacts.js（CI 里由「打交付包」步骤覆盖）');
   } else {
     const r = runNode(path.join('tools', 'build-installer.js'));
-    const outDir = process.env.PMS_INSTALLER_OUT || 'dist-installer';
-    const exe = path.join(ROOT, outDir, '弱电项目管理系统-安装程序.exe');
+    const exe = require('./installer-path.js').findInstaller();
     const ok = fs.existsSync(exe);
     row('生成安装包', ok, ok ? `${(fs.statSync(exe).size / 1024 / 1024).toFixed(1)} MB` : '✗ 未生成');
     if (!ok) console.log(r.out.split('\n').slice(-10).map(l => '        ' + l).join('\n'));
@@ -201,9 +248,9 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   head('6/6  安装包验证');
   if (CI) {
     // verify-installer / verify-overwrite 要上传 contract.pdf 验证识别引擎，
-    // 素材不入库 → CI 上必然红。这里如实标成"未执行"，不假装通过。
-    row('常规验证（装→跑→卸）', true, 'CI 跳过：需 fixtures/contract.pdf');
-    row('覆盖安装（服务在跑时覆盖）', true, 'CI 跳过：同上');
+    // 素材不入库 → CI 上必然红。这里如实标成"没跑"，不假装通过。
+    skip('常规验证（装→跑→卸）', '需 fixtures/contract.pdf');
+    skip('覆盖安装（服务在跑时覆盖）', '需 fixtures/contract.pdf');
   } else {
     {
       const r = runNode(path.join('tools', 'verify-installer.js'));
@@ -225,15 +272,24 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   }
 
   // ---------- 汇总 ----------
+  // 三类分开数。分开的意义：以前「通过 40，失败 0」这句话里混着 13 个
+  // 从没执行过的项，看起来是无懈可击的绿，实际有一半功能区是暗的。
   const bad = rows.filter(r => !r.ok);
+  const skippedRows = rows.filter(r => r.ok && r.skipped);
+  const passed = rows.length - bad.length - skippedRows.length;
   console.log('');
   console.log('  ' + '═'.repeat(58));
-  console.log(`    共 ${rows.length} 项，通过 ${rows.length - bad.length}，失败 ${bad.length}`);
+  console.log(`    共 ${rows.length} 项：通过 ${passed}，失败 ${bad.length}，未执行 ${skippedRows.length}`);
   if (bad.length) {
+    console.log('');
     bad.forEach(b => console.log(`      ✗ ${b.name}  ${b.detail}`));
-  } else {
-    console.log('    ✓ 全部通过');
   }
+  if (skippedRows.length) {
+    console.log('');
+    console.log('    以下项没有跑，不算通过：');
+    skippedRows.forEach(s => console.log(`      ⊘ ${s.name}  ${s.detail}`));
+  }
+  if (!bad.length && !skippedRows.length) console.log('    ✓ 全部通过（无跳过、无失败）');
   console.log('  ' + '═'.repeat(58));
   console.log('');
   process.exit(bad.length ? 1 : 0);

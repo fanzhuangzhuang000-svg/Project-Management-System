@@ -20,7 +20,7 @@ const ROOT = path.join(__dirname, '..');
 //   症状：授权两项红，因为旧包里的 license.js 还是旧签名密钥、只认 ELV1，
 //   而测试用仓库里的 license.js 生成 ELV3 的码 —— 旧包当然认不出来。
 //   教训：验证脚本必须指向**默认产物目录**，不能指向任何带 -new/-old 的副本。
-const SETUP = path.join(ROOT, process.env.PMS_INSTALLER_OUT || 'dist-installer', '弱电项目管理系统-安装程序.exe');
+const SETUP = require('./installer-path.js').findInstaller();
 const TMP = path.join(os.tmpdir(), 'setup-elv-verify.exe');
 const DIR = path.join(os.tmpdir(), 'ELV-PMS-verify2');
 /**

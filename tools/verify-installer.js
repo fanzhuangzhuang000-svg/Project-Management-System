@@ -16,7 +16,7 @@ const os = require('node:os');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
-const SETUP_SRC = path.join(ROOT, 'dist-installer', '弱电项目管理系统-安装程序.exe');
+const SETUP_SRC = require('./installer-path.js').findInstaller();
 const SETUP = path.join(os.tmpdir(), 'setup-verify.exe');
 const DIR = path.join(os.tmpdir(), 'ELV-PMS-verify');
 // 高位端口：避开三套运行时的 8787/8790/8791。Windows 的 SO_REUSEADDR 允许

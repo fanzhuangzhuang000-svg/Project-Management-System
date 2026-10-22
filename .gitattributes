@@ -38,3 +38,8 @@ docker-compose.yml text eol=lf
 *.ts   linguist-language=TypeScript
 *.tsx  linguist-language=TypeScript
 *.md   linguist-documentation
+
+# 测试夹具按原始字节入库，不做行尾转换。
+# GBK 那份 CSV 必须是「中文 Excel 另存为」原样（CRLF），
+# 一旦被转成 LF，测的就不再是用户真实拿到的文件了。
+tools/fixtures/* -text
