@@ -520,7 +520,7 @@ export const http = {
 
   /* 回收站 / 日志 */
   trash: () => api<{ rows: any[]; stats: { entries: number; rows: number; bytes: number } }>('/api/trash'),
-  restore: (id: number) => post(`/api/trash/${id}/restore`),
+  restore: (id: number) => post<{ ok: boolean; restored: number; skipped: number; reattached: number }>(`/api/trash/${id}/restore`),
   purge: (id: number) => post(`/api/trash/${id}/purge`),
   purgeAll: () => post<{ purged: number }>('/api/trash/purge-all'),
   logs: (params: Record<string, string | number> = {}) => {

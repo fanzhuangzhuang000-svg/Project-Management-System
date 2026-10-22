@@ -234,7 +234,29 @@ function stats () {
   const tcS = tenantCtx.scope('');
   const r = db.prepare('SELECT COUNT(*) n, COALESCE(SUM(row_count),0) c FROM trash'
     + (tcS ? ` WHERE ${tcS}` : '')).get();
-  return { entries: r.n, rows: r.c, keepDays: KEEP_DAYS };
+  // bytes 是回收站页面「占用空间」那一格用的。
+  // 以前这里没返回它，前端写的是 (stats.bytes/1024/1024).toFixed(1) ——
+  // undefined 算出来是 NaN，界面上直接显示「NaN MB」。
+  // 回收站一直是空的，所以这个格子从来没人见过。
+  // 口径：快照 JSON 的体积（就是回收站这张表占的空间）+ 引用到的附件文件体积。
+  // 附件按 best-effort 统计，取不到就算 0，不让统计本身把页面搞挂。
+  let bytes = 0;
+  try {
+    const attach = require('./attachments.js');
+    const rows = db.prepare('SELECT payload FROM trash' + (tcS ? ` WHERE ${tcS}` : '')).all();
+    for (const row of rows) {
+      const text = row.payload || '';
+      bytes += Buffer.byteLength(text, 'utf8');
+      const p = safeParse(text, null);
+      for (const ref of (p && p.attachRefs) || []) {
+        try {
+          const a = attach.get(ref.id);
+          if (a && a.size) bytes += Number(a.size) || 0;
+        } catch { /* 附件已被清理，不算 */ }
+      }
+    }
+  } catch { /* 统计失败不影响条目数 */ }
+  return { entries: r.n, rows: r.c, keepDays: KEEP_DAYS, bytes };
 }
 
 module.exports = { createTable, capture, push, list, get, restore, purge, purgeAll, autoPurge, stats, KEEP_DAYS };

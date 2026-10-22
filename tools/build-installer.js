@@ -16,6 +16,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { safeRm } = require('./safe-dir');
 
 const ROOT = path.join(__dirname, '..');
 const OUT = path.join(ROOT, process.env.PMS_INSTALLER_OUT || 'dist-installer');
@@ -98,7 +99,8 @@ function copyDir (from, to) {
     log('复用已有压缩包（跳过错暂存与压缩）');
   } else {
     log('清理暂存目录…');
-    fs.rmSync(OUT, { recursive: true, force: true });
+    // ⚠️ self: true —— 这里就是要清空整个产物目录，但只允许清这一个（见 safe-dir.js）
+    safeRm(OUT, [OUT], { self: true });
     fs.mkdirSync(STAGE, { recursive: true });
 
     // node.exe：用当前正在跑的这个 node，保证版本一致
@@ -220,8 +222,10 @@ namespace ElvPmsSetup {
   console.log('');
 
   // 清理中间产物（zip 已经打进 exe，payload 目录也不需要）
+  // ⚠️ 目录删除走 safeRm（见 tools/safe-dir.js 的事故说明）。单文件仍用 rmSync ——
+  //    文件删错了最多丢一个产物，不会连锁。
+  safeRm(STAGE, [OUT]);
   fs.rmSync(ZIP, { force: true });
-  fs.rmSync(STAGE, { recursive: true, force: true });
   fs.rmSync(path.join(OUT, 'BuildInfo.cs'), { force: true });
   process.exit(0);
 })().catch(e => { console.error('\n  ✗ 打包失败：' + e.message); process.exit(1); });

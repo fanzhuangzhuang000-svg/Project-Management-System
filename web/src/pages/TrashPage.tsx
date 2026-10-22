@@ -76,7 +76,7 @@ export default function TrashPage() {
                         <Button size="sm" variant="danger" onClick={async () => {
                           const ok = await confirm('彻底删除？', '这条记录将无法恢复，附件文件也会一起删掉。', '彻底删除', true)
                           if (!ok) return
-                          try { await http.purge(r.id); toast('已彻底删除', 'ok'); void load() }
+                          try { await http.purge(r.id); toast('已彻底删除', 'ok'); void load(); void refreshDash() }
                           catch (e) { toast((e as Error).message, 'err') }
                         }}><Trash2 size={14} /></Button>
                       </div>

@@ -69,7 +69,10 @@ const TOOL_EXTRA = [
   'backup.js', 'restore-backup.js',
 ];
 
-function rmrf (p) { fs.rmSync(p, { recursive: true, force: true }); }
+// ⚠️ 删除一律走 safeRm：只允许删 OUT 之内的东西。
+//    参见 tools/safe-dir.js 顶部的事故说明 —— 之前打包脚本把仓库根目录整个删过一次。
+const { safeRm } = require('./safe-dir');
+function rmrf (p) { safeRm(p, [OUT]); }
 function write (p, content) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, content, 'utf8');

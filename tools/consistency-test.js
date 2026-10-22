@@ -370,6 +370,55 @@ check('这类变更也进了快照（否则删了还原不回来）',
   !!snap8 && snap8.payload.rows.some(r => r.table === 'contract_changes' && r.data.id === ch8.id),
   snap8 ? `快照 ${snap8.payload.rows.length} 行` : '没有快照');
 
+// 回收站页面的「占用空间」读的是 stats.bytes。
+// 这个字段以前根本不存在，undefined/1024/1024 → "NaN" 直接显示在界面上；
+// 因为回收站一直是空的，那个格子从来没人见过。
+const st = trash.stats();
+check('回收站统计带 bytes（占用空间不会算出 NaN）',
+  typeof st.bytes === 'number' && st.bytes > 0, `bytes=${st.bytes}`);
+
+// ---------------------------------------------------------------- 打包安全
+// 真实事故：打包脚本曾经把**仓库根目录**整个删掉 —— package.json / server.js /
+// db.js / .git 全没了，只剩一个 trash.js，未提交的改动全部丢失，只能重新 clone。
+// 事后按代码逐行核对，所有 rmSync 的入参看起来都在 dist-artifacts 之下，
+// **没能复现出是哪条路径拼成了空串**。所以改成结构性防护（tools/safe-dir.js）：
+// 删除必须显式声明允许范围，越界直接抛错。下面这些断言就是那道防线的守门员。
+{
+  const { safeRm, assertNotLandmark } = require('./safe-dir.js');
+  const ROOTDIR = path.join(__dirname, '..');
+  const ART = path.join(TMP, 'fake-out');            // 假产物目录，随便删
+  fs.mkdirSync(path.join(ART, 'stage'), { recursive: true });
+
+  // 危险入参只喂给 "只判不删" 的 assertNotLandmark，绝不拿真实路径去试 safeRm。
+  const mustReject = (name, fn) => {
+    let threw = false;
+    try { fn() } catch { threw = true }
+    check(name, threw, threw ? '' : '没拦住 —— 防线失效');
+  };
+  mustReject('删除防线：仓库根目录被拦', () => assertNotLandmark(ROOTDIR));
+  mustReject('删除防线：系统临时目录被拦', () => assertNotLandmark(os.tmpdir()));
+  mustReject('删除防线：盘根被拦', () => assertNotLandmark(path.parse(ROOTDIR).root));
+  mustReject('删除防线：空路径被拦', () => safeRm('', [ART]));
+  mustReject('删除防线：越界目录被拦（同级的 tools/）',
+    () => safeRm(path.join(ROOTDIR, 'tools'), [ART]));
+  mustReject('删除防线：删允许范围本身要显式 self',
+    () => safeRm(ART, [ART]));
+
+  // 正常路径不能误伤：范围内的子目录该删就得删掉
+  let okDel = false;
+  try { safeRm(path.join(ART, 'stage'), [ART]); okDel = !fs.existsSync(path.join(ART, 'stage')) } catch { }
+  check('删除防线：范围内的子目录照常删掉', okDel);
+
+  // 静态复查：打包脚本里不该再有裸的递归删除
+  for (const f of ['tools/build-artifacts.js', 'tools/build-installer.js']) {
+    const src = fs.readFileSync(path.join(ROOTDIR, f), 'utf8');
+    const bare = (src.match(/fs\.rmSync\([^)]*recursive:\s*true/g) || []).length;
+    check(`${f} 的目录删除全部走 safeRm`, bare === 0, bare ? `还有 ${bare} 处裸 rmSync` : '');
+  }
+  check('仓库根关键文件完好', ['package.json', 'server.js', 'db.js', 'trash.js']
+    .every(f => fs.existsSync(path.join(ROOTDIR, f))));
+}
+
 // ================================================================
 const badRows = results.filter(r => !r.ok);
 console.log(`\n${results.length - badRows.length} / ${results.length} 项通过${skipped ? `（另跳过 ${skipped} 条）` : ''}`);
