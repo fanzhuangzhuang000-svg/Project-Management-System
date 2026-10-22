@@ -16,6 +16,11 @@ const T = require('./test-auth.js');
 // 基址必须和 test-auth.js 一致：登录会话属于 T.BASE，
 // 这里换成别的地址就会带着不属于它的 Cookie 打过去，表现为随机 401。
 const BASE = process.argv[2] || T.BASE;
+// 数据目录必须跟被测服务用同一个。
+// 原来这里写死 <repo>/data —— 只要服务是用 PMS_DATA_DIR 指到别处的
+// （CI、并行跑多套、或用临时目录跑），测试读的就是另一个目录，
+// 表现为「设置保存成功」但「文件里找不到密钥」，两条断言互相矛盾。
+const DATA_DIR = process.env.PMS_DATA_DIR || path.join(__dirname, '..', 'data');
 const MOCK_PORT = 18899;
 const PUSH_PORT = 18895;
 const pushReceived = [];
@@ -174,7 +179,7 @@ T.forceAdminPassword();
 
 (async () => {
   const mock = await startMock();
-  const cfgFile = path.join(__dirname, '..', 'data', 'ai-config.json');
+  const cfgFile = path.join(DATA_DIR, 'ai-config.json');
   const backup = fs.existsSync(cfgFile) ? fs.readFileSync(cfgFile) : null;
   let limitedUser = null;
 
@@ -405,7 +410,7 @@ T.forceAdminPassword();
     console.log('[12] 每日经营简报');
     respondText = '**【应收集中】** 应收 366.3 万，170.9 万逾期超 90 天。今天先发催款函。\n\n一句话判断：需要警惕。';
     // 先清掉当天缓存，确保这次是真生成
-    const briefFile = path.join(__dirname, '..', 'data', 'briefings');
+    const briefFile = path.join(DATA_DIR, 'briefings');
     if (fs.existsSync(briefFile)) fs.rmSync(briefFile, { recursive: true, force: true });
     const br1 = await get('/api/ai/briefing');
     check('能生成简报', br1.available === true && (br1.text || '').length > 10,
@@ -625,7 +630,7 @@ T.forceAdminPassword();
     if (backup) fs.writeFileSync(cfgFile, backup);
     else if (fs.existsSync(cfgFile)) fs.unlinkSync(cfgFile);
     // 清掉测试生成的简报缓存
-    const bdir = path.join(__dirname, '..', 'data', 'briefings');
+    const bdir = path.join(DATA_DIR, 'briefings');
     if (fs.existsSync(bdir)) fs.rmSync(bdir, { recursive: true, force: true });
     mock.close();
   }

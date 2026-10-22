@@ -562,6 +562,25 @@ function publicSettings () {
   const s = dbf.getSettings();
   return { system_name: s.system_name, company_name: s.company_name };
 }
+
+/**
+ * 这些设置项只给有「系统设置」权限的人看。
+ *
+ * license_key 是授权凭证（泄露等于把授权连同公司名一起交出去），
+ * backup_share 是内网共享路径（\\NAS\备份 这种东西对攻击者是现成的地图）。
+ * 而 /api/me 和 /api/settings 原来是**任何登录用户**都能拿到全量 settings，
+ * 包括这两项 —— 一个只被授权看合同的账号，也能读到整套备份目录结构。
+ *
+ * 普通用户真正需要的只有标题、公司名和欢迎语，其余一律置空。
+ */
+const SENSITIVE_SETTING_KEYS = ['license_key', 'backup_share'];
+function settingsFor (req) {
+  const s = dbf.getSettings();
+  if (req.user && auth.canSys(req.user.perms, 'settings')) return s;
+  const out = { ...s };
+  for (const k of SENSITIVE_SETTING_KEYS) out[k] = '';
+  return out;
+}
 // ---------------- 路由 ----------------
 async function handleApi (req, res, url) {
   const seg = url.pathname.replace(/^\/api\/?/, '').split('/').filter(Boolean);
@@ -627,7 +646,7 @@ async function handleApi (req, res, url) {
       user: auth.publicUser(req.user),
       tables: TABLE_ORDER,
       sysKeys: auth.SYS_KEYS,
-      settings: dbf.getSettings(),
+      settings: settingsFor(req),
       license: licenseNow(),
     });
   }
@@ -636,7 +655,7 @@ async function handleApi (req, res, url) {
   if (head === 'settings') {
     // 读：登录用户都能读（前端要拿它渲染欢迎语和标题）
     if (method === 'GET') {
-      return sendJSON(res, 200, { settings: dbf.getSettings(), defaults: dbf.DEFAULT_SETTINGS, license: licenseNow() });
+      return sendJSON(res, 200, { settings: settingsFor(req), defaults: dbf.DEFAULT_SETTINGS, license: licenseNow() });
     }
     // 写：需要系统设置权限
     if (method === 'POST') {
@@ -691,9 +710,13 @@ async function handleApi (req, res, url) {
     if (method === 'POST' && a && b === 'reset') {
       let body = {};
       try { body = await readBody(req); } catch { /* 允许空体 */ }
+      const target = dbf.db.prepare('SELECT username FROM users WHERE id = ?').get(parseInt(a, 10));
       const r = auth.resetPassword(a, body.password, true);
       if (r.error) return sendJSON(res, 400, r);
-      writeLog(req, 'update', null, parseInt(a, 10), '#' + a, '重置密码');
+      // 日志里写用户名而不是 "#3"。
+      // 重置密码是「把别人锁在门外 / 把别人放进来的」那类操作，
+      // 事后追责时一行 "#3" 根本对不上人 —— 而账号可能早被删了。
+      writeLog(req, 'update', null, parseInt(a, 10), target ? target.username : '#' + a, '重置密码');
       return sendJSON(res, 200, r);
     }
     if (method === 'POST') {
@@ -1414,8 +1437,19 @@ async function handleApi (req, res, url) {
     if (a && b === 'delete' && method === 'POST') {
       const row = attach.get(a);
       if (!row) return sendJSON(res, 404, { error: '附件不存在' });
-      // 删除比查看严：要么管理员，要么对该附件所属表有写权限
-      if (!req.user.perms.all && row.table_name && !auth.canWrite(req.user.perms, row.table_name)) {
+      // 删除比查看严：要么管理员，要么对该附件所属表有写权限。
+      //
+      // 但**暂存件**（上传了还没挂到任何记录上，table_name 为空）没有"所属表"，
+      // 原来那句 `row.table_name && !canWrite(...)` 遇到它就整段跳过 ——
+      // 任何登录用户只要知道 id 就能删别人的扫描件，而且是直接 unlink，
+      // 不进回收站、不留痕迹。暂存件恰恰是"刚上传、还没保存"的那批，
+      // 里面常常就是合同盖章页这种最需要保护的原件。
+      // 所以暂存件改成只认上传人本人（或管理员）。
+      const isAdmin = !!req.user.perms.all;
+      const canDelete = row.table_name
+        ? isAdmin || auth.canWrite(req.user.perms, row.table_name)
+        : isAdmin || (row.uploaded_by != null && Number(row.uploaded_by) === Number(req.user.id));
+      if (!canDelete) {
         return sendJSON(res, 403, { error: '没有删除这个附件的权限' });
       }
       const r = attach.remove(a);
@@ -1476,6 +1510,11 @@ async function handleApi (req, res, url) {
       return res.end(buf);
     }
     if (a && TABLES[a] && method === 'POST') {
+      // 导入是**批量写入**，必须按目标表校验写权限。
+      // 原来这里只查了 sys:import 这一个开关，等于「有导入权限 = 能往任何表灌数据」：
+      // 一个只被授权看合同的账号，可以往 payments（收付款）里导一批假数据，
+      // 金额直接进经营报表。导入比手工录入更需要这道闸，因为它一次能写几千行。
+      if (!guardTable(req, res, a, 'write')) return;
       const bm = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(req.headers['content-type'] || '');
       if (!bm) return sendJSON(res, 400, { error: '请以表单方式上传文件' });
       let buf;
@@ -1557,7 +1596,11 @@ async function handleApi (req, res, url) {
     // 先做快照存进回收站（30 天内可还原）
     let trashId = null;
     try {
-      const label = ids.map(id => recordLabel(a, dbf.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id))).filter(Boolean).join('、').slice(0, 80);
+      // ⚠️ 这里原来是 recordLabel(a, ...)，但 /api/batch-delete 的路径里没有第二段，
+      //    `a` 是 undefined —— 而 recordLabel 拿不到表定义就退回 `#12`。
+      //    后果：批量删掉的东西在回收站里全叫 "#12"、"#13"，日志里也一样，
+      //    想还原时根本认不出哪条是哪条，只能一条条点开看。表名应该用 table。
+      const label = ids.map(id => recordLabel(table, dbf.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id))).filter(Boolean).join('、').slice(0, 80);
       const payload = trash.capture(table, ids);
       trashId = trash.push(table, ids, payload, operatorOf(req), label);
     } catch (e) { console.log('[回收站] 快照失败：' + e.message); }
@@ -1654,8 +1697,12 @@ async function handleApi (req, res, url) {
     }
 
     let linked = 0;
+    // 带上调用者身份：只能挂自己上传的、或本来就挂在这条记录上的附件。
+    // 不校验的话，知道 id 就能把别人的扫描件"搬"到自己的记录下，
+    // 然后靠"能看记录就能看附件"读到原件 —— 这条路以前是完全通着的。
+    const linkOpts = { isAdmin: !!req.user.perms.all, userId: req.user.id };
     if (attachToken) linked += attach.linkByToken(attachToken, a, r.id);
-    if (attachIds.length) linked += attach.linkIds(attachIds, a, r.id);
+    if (attachIds.length) linked += attach.linkIds(attachIds, a, r.id, linkOpts);
     const after = dbf.db.prepare(`SELECT * FROM ${a} WHERE id = ?`).get(r.id);
     const label = recordLabel(a, after);
     if (id) {
@@ -1722,6 +1769,13 @@ async function handleApi (req, res, url) {
     }
     if (a && b === 'restore' && method === 'POST') {
       const entry = trash.get(a);
+      // 还原 = 往原表里写回一条记录，所以必须校验**那张表**的写权限。
+      // 原来只查了 sys:trash：一个只被授权「清理回收站」的账号，
+      // 可以把别人删掉的合同、项目原样"注入"回数据库 —— 相当于绕过所有写权限。
+      if (entry && entry.table_name && TABLES[entry.table_name]
+          && !auth.canWrite(req.user.perms, entry.table_name)) {
+        return sendJSON(res, 403, { error: `没有还原「${TABLES[entry.table_name].label}」的权限` });
+      }
       const r = trash.restore(a);
       if (r.error) return sendJSON(res, 400, r);
       writeLog(req, 'restore', entry ? entry.table_name : null, null, entry ? entry.label : null, `还原 ${r.restored} 条`);
@@ -1746,7 +1800,12 @@ async function handleApi (req, res, url) {
     if (!guardSys(req, res, 'logs', '操作日志')) return;
     let body = {};
     try { body = await readBody(req); } catch { /* 允许空体 */ }
-    const n = logmod.purge(body.days || 365);
+    const days = Number(body.days) || 365;
+    const n = logmod.purge(days);
+    // 删审计日志这件事本身必须留痕 —— 否则「谁在什么时候把 365 天的日志清了」
+    // 查都查不到，而这恰好是想掩盖操作的人最想干的一步。
+    // 写在 purge 之后：新日志的时间戳是现在，不会被这次清理带走。
+    writeLog(req, 'purge', null, null, '清理操作日志', `保留最近 ${days} 天，删除 ${n} 条`);
     return sendJSON(res, 200, { ok: true, purged: n });
   }
 
@@ -1782,7 +1841,12 @@ async function handleApi (req, res, url) {
 
   if (head === 'demo' && a === 'clear' && method === 'POST') {
     if (!req.user.perms.all) return sendJSON(res, 403, { error: '只有管理员可以清空示例数据' });
-    return sendJSON(res, 200, { ok: true, removed: dbf.clearDemo() });
+    const removed = dbf.clearDemo();
+    // 清空数据必须留痕。这是破坏性操作里最容易被当成"无痕"的一种：
+    // 界面上只显示"示例数据已清空"，实际删了几千行，事后没人说得清是谁点的。
+    const total = Object.values(removed || {}).reduce((s, n) => s + (Number(n) || 0), 0);
+    writeLog(req, 'delete', null, null, '清空示例数据', `共删除 ${total} 行：${JSON.stringify(removed)}`);
+    return sendJSON(res, 200, { ok: true, removed });
   }
 
   return sendJSON(res, 404, { error: '接口不存在: ' + url.pathname });
@@ -2091,9 +2155,20 @@ function sweepLogs () {
   try {
     const days = Number(dbf.getSettings().log_retention_days);
     if (!days || days <= 0) return;
-    const n = logs.purge(days);
+    // ⚠️ 这里原来是 `logs.purge(days)`，而顶部导入的名字是 `logmod`。
+    //    `logs` 从来没有定义过 —— 这一行每次执行都抛 ReferenceError，
+    //    被下面的 catch 吞掉，只在控制台留一句"清理失败"。
+    //    后果：「系统设置 · 日志保留天数」这个开关**从上线起就没生效过**，
+    //    日志表只会无限增长。而它失败得这么安静，是因为错误被 catch 兜住了，
+    //    日志表涨到几十万行也只是让人感觉"日志页面有点慢"。
+    //    这类"变量名写错 + 全局 catch"的组合，任何静态检查都比人眼可靠，
+    //    所以另配了 tools/module-ref-test.js 专门盯这种情况。
+    const n = logmod.purge(days);
     if (n) console.log(`[日志] 已清理 ${n} 条超过 ${days} 天的操作日志`);
-  } catch (e) { console.log('[日志] 清理失败：' + e.message); }
+  } catch (e) {
+    // 不再静默：清理失败本身是需要被看见的事（磁盘、权限、SQL 错误都在这里现形）
+    console.log('[日志] 清理失败：' + e.message);
+  }
 }
 setTimeout(sweepLogs, 60 * 1000).unref?.();
 setInterval(sweepLogs, 24 * 60 * 60 * 1000).unref?.();

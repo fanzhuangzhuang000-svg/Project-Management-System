@@ -164,7 +164,15 @@ function pickDate (text, label) {
   //   2026 年 09 月 28 日     ← 值在这里
   // 所以先定位标签，再在它后面一小段窗口里找第一个日期。
   const idx = text.indexOf(label);
-  const win = idx >= 0 ? text.slice(idx, idx + 90) : text;
+  // 标签压根不存在时必须返回 null。
+  //
+  // 原来这里是 `const win = idx >= 0 ? text.slice(...) : text` —— 找不到标签就拿
+  // 全文当窗口，于是返回文里第一个日期。后果很隐蔽：一份没写「开工日期」的合同，
+  // start_date / end_date 会被填成**签订日期**，两个字段看起来都有值、
+  // 界面上也不报错，只是全错。而调用方本来就是用 `a || b || c` 串同义词的，
+  // 全文兜底反而让这串同义词全部返回同一个日期，等于没写。
+  if (idx < 0) return null;
+  const win = text.slice(idx, idx + 90);
   const a = win.match(/(\d{4})年(\d{1,2})月(\d{1,2})日?/);
   const b = win.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
   const m = a || b;
@@ -275,7 +283,13 @@ function extractInvoice (compact, normalized) {
   let total = null;
   {
     const all = [];
-    const re = /[¥￥]\s*([0-9][0-9.,]*)/g;
+    // 金额必须「像钱」：位数有界、最多两位小数。
+    //
+    // 原来收的是 `[0-9][0-9.,]*` —— 这个字符类不认「%」，也不认列分隔，
+    // 于是发票上「¥300000.00」右边紧挨着的「9%」的 9 会被一起吞进去，
+    // 读成 300000009，然后因为是全票最大的 ¥ 金额，直接当成了价税合计。
+    // 税率列在真实发票里就挨着金额列，这不是极端情况，是常态。
+    const re = /[¥￥]\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/g;
     let mm;
     while ((mm = re.exec(compact)) !== null) {
       const v = parseMoney(mm[1]);
@@ -475,6 +489,13 @@ function extractContract (compact, normalized) {
   }
 
   // 甲乙方
+  //
+  // ⚠️ 这里原来写的是 `[（(]?[^)）]{0,8}[)）]?` —— 本意是跳过「甲方（全称）」里
+  // 那个括号注释，可它是「可选左括号 + 0~8 个任意非右括号字符 + 可选右括号」：
+  // 括号可以不存在，那 8 个字符就照吃。于是「甲方：市第一人民医院」被吃成
+  // 「甲方」+ 吃掉「：市第一人民」（6 个字）+ 只剩「医院」。
+  // 五个字以上的单位名全被截断，而且截得越短越像"识别不准"，
+  // 很难联想到是正则吃掉的。改成括号必须成对出现才算注释。
   const grabParty = (re) => {
     const mm = compact.match(re);
     if (!mm) return null;
@@ -483,8 +504,8 @@ function extractContract (compact, normalized) {
     v = v.replace(/[（(].*$/, '').replace(/[，,。;；].*$/, '').trim();
     return v.length >= 2 && v.length <= 40 ? v : null;
   };
-  const a = grabParty(/(?:甲方|发包方|采购方|需方|买方)[（(]?[^)）]{0,8}[)）]?[:：]?([^\n]{2,40})/);
-  const b = grabParty(/(?:乙方|承包方|分包方|供货方|供方|卖方)[（(]?[^)）]{0,8}[)）]?[:：]?([^\n]{2,40})/);
+  const a = grabParty(/(?:甲方|发包方|采购方|需方|买方)(?:[（(][^)）]{0,8}[)）])?[:：]?([^\n]{2,40})/);
+  const b = grabParty(/(?:乙方|承包方|分包方|供货方|供方|卖方)(?:[（(][^)）]{0,8}[)）])?[:：]?([^\n]{2,40})/);
   if (a) parties.push({ role: 'party_a', label: '甲方', name: a });
   if (b) parties.push({ role: 'party_b', label: '乙方', name: b });
 

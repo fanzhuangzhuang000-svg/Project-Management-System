@@ -303,17 +303,37 @@ function detachForProject (projectId) {
 }
 
 /** 把指定的若干个附件直接关联到某条记录（识别后"新建并填入"时用） */
-function linkIds (ids, tableName, recordId) {
+/**
+ * 把一批附件挂到某条记录上（保存表单时带 __attach_ids 走这里）。
+ *
+ * ⚠️ 必须校验归属，否则这是一个越权读的口子：
+ *   任何对某张表有写权限的人，只要知道附件 id，就能把它挂到自己的记录上，
+ *   随后通过「能看这条记录 → 能看它的附件」拿到别人的扫描件。
+ *   暂存件（上传后还没挂记录的）尤其危险 —— 它们连 table_name 都没填，
+ *   以前这里对 id 不做任何限制，等于谁捡到谁得。
+ *
+ * 三条准入规则（满足其一即可）：
+ *   1) 是自己上传的
+ *   2) 本来就挂在这条记录上（重复提交表单时不该报错）
+ *   3) 调用者是管理员
+ * 其余一律跳过 —— 返回的 n 只统计真正挂上的条数，前端能看出有没挂上的。
+ */
+function linkIds (ids, tableName, recordId, opts = {}) {
   if (!ids || !ids.length || !recordId) return 0;
   const projectId = resolveProjectId(tableName, recordId);
   const stmt = db.prepare(`UPDATE attachments
     SET table_name = ?, record_id = ?, project_id = COALESCE(?, project_id), token = NULL, updated_at = ?
-    WHERE id = ?`);
+    WHERE id = ?
+      AND (table_name IS NULL OR (table_name = ? AND record_id = ?))
+      AND (? = 1 OR uploaded_by IS NULL OR uploaded_by = ?)`);
+  const rid = parseInt(recordId, 10);
+  const admin = opts.isAdmin ? 1 : 0;
+  const uid = opts.userId == null ? null : parseInt(opts.userId, 10);
   let n = 0;
   for (const raw of ids) {
     const id = parseInt(raw, 10);
     if (!id) continue;
-    n += Number(stmt.run(tableName, parseInt(recordId, 10), projectId, nowISO(), id).changes);
+    n += Number(stmt.run(tableName, rid, projectId, nowISO(), id, tableName, rid, admin, uid).changes);
   }
   return n;
 }

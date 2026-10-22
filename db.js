@@ -1587,7 +1587,18 @@ function clearDemoInner () {
         `DELETE FROM schedules WHERE project_id IN (${demoPids.map(() => '?').join(',')})`).run(...demoPids).changes);
     }
     res.schedules = sched;
-    for (const t of ['materials', 'invoices', 'payments', 'contracts']) {
+    // 这里是「示例数据涉及的全部子表」。
+    //
+    // 原来这张清单只有 4 张（materials/invoices/payments/contracts），
+    // 而 seed() 实际写 6 张 —— 漏了 expenses（12 条）和 maintenance（3 条）。
+    // 后果不是"多留几条垃圾"这么轻：projects 那行删完之后，这些费用的
+    // project_id 就指向了不存在的项目，成了永远查不到、也永远删不掉的孤儿。
+    // 而且仪表盘的费用/维保合计是按 project_id 关联算的（perProject.reduce），
+    // 孤儿行不进合计 —— 所以每重播一次就静默多 15 行，界面上一点异常都看不出来。
+    // 实测一个反复重播的测试库：费用 852 行、维保 213 行，全是谁也看不见的残留。
+    //
+    // 加表时必须同步加到这里，且**必须在删 projects 之前**执行完。
+    for (const t of ['materials', 'invoices', 'payments', 'expenses', 'maintenance', 'contract_changes', 'contracts']) {
       res[t] = Number(db.prepare('DELETE FROM ' + t + ' WHERE is_demo = 1').run().changes);
     }
     res.projects = Number(db.prepare('DELETE FROM projects WHERE is_demo = 1').run().changes);
