@@ -222,14 +222,28 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
       // 但也不能报"通过"：那会让「OCR 自检」这一整段在报告里凭空变成绿的。
       skip('OCR 自检', '无夹具素材（tools/fixtures/ 为空）');
     } else {
-      const r = runNode(path.join('tools', 'ocr-selftest.js'), files);
-      const names = [...r.out.matchAll(/文件: ([^\r\n]+)/g)].map(m => path.basename(m[1].trim()));
-      const scores = [...r.out.matchAll(/置信度: (\d+)\s*% \((\d+)\/(\d+)/g)];
-      if (!names.length) row('OCR 自检', false, '✗ 没有输出');
-      for (let i = 0; i < names.length; i++) {
-        const s = scores[i];
-        if (!s) { row(names[i], false, '✗ 无置信度'); continue }
-        row(names[i], s[2] === s[3], `${s[1]}%  ${s[2]}/${s[3]}`);
+      // 图片素材走的是系统级 OCR（WinRT / Tesseract），缺中文语言包时
+      // 识别出来是空的 —— GitHub 的 windows-latest、海外客户的英文系统都这样。
+      // 这是环境能力问题，如实标成「未执行」；PDF 文字层是纯 JS，不受影响。
+      let zhOk = true;
+      try {
+        const { windowsOcrLangs } = require('./ocr-backend.js');
+        zhOk = windowsOcrLangs().some(l => /^zh/i.test(l));
+      } catch { /* 探测不了就当可用，让断言自己说话 */ }
+      const run = files.filter(f => zhOk || f.toLowerCase().endsWith('.pdf'));
+      const drop = files.filter(f => !zhOk && !f.toLowerCase().endsWith('.pdf'));
+      for (const f of drop) skip(`OCR 自检 ${path.basename(f)}`, '系统没有中文 OCR 语言包，图片扫描件认不出中文（PDF 文字层不受影响）');
+      if (!run.length && drop.length) skip('OCR 自检', '当前环境没有任何可用的中文识别引擎');
+      if (run.length) {
+        const r = runNode(path.join('tools', 'ocr-selftest.js'), run);
+        const names = [...r.out.matchAll(/文件: ([^\r\n]+)/g)].map(m => path.basename(m[1].trim()));
+        const scores = [...r.out.matchAll(/置信度: (\d+)\s*% \((\d+)\/(\d+)/g)];
+        if (!names.length) row('OCR 自检', false, '✗ 没有输出');
+        for (let i = 0; i < names.length; i++) {
+          const s = scores[i];
+          if (!s) { row(names[i], false, '✗ 无置信度'); continue }
+          row(names[i], s[2] === s[3], `${s[1]}%  ${s[2]}/${s[3]}`);
+        }
       }
     }
   }

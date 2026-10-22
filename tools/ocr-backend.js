@@ -109,7 +109,10 @@ function backend (opts = {}) {
 /** 给启动横幅/自检用的简短描述 */
 function describe () {
   const b = backend();
-  if (b.name === 'powershell') return 'Windows OCR (zh-Hans-CN)';
+  if (b.name === 'powershell') {
+    const hasZh = windowsOcrLangs().some(l => /^zh/i.test(l));
+    return hasZh ? 'Windows OCR (zh-Hans-CN)' : 'Windows OCR（缺中文语言包）';
+  }
   if (b.name === 'tesseract') {
     const hasChi = b.langs.some(l => l.startsWith('chi_sim') || l.startsWith('chi_tra'));
     return 'Tesseract (' + (hasChi ? 'chi_sim+eng' : (b.langs.join('+') || '未装中文包')) + ')';
@@ -117,11 +120,56 @@ function describe () {
   return '未检测到（识别功能不可用）';
 }
 
+let winOcrLangsCache;
+let winOcrLangsFailAt = 0;
+/**
+ * 枚举 WinRT OCR 的可用识别语言（形如 en-US, zh-Hans-CN）。
+ *
+ * ⚠️ 「Windows 上有 ocr.ps1」不等于「能认中文」：GitHub 的 windows-latest、
+ * 海外客户的英文系统都没有中文语言包，WinRT 会退回英文引擎 —— 引擎创建成功，
+ * 中文扫描件识别出来全是空。以前 health() 对 powershell 后端无条件报 ok，
+ * 界面显示「识别引擎可用」，用户传一张扫描件却什么都抽不出来。
+ * 探测一次要一两秒，结果缓存住。
+ */
+function windowsOcrLangs () {
+  if (winOcrLangsCache) return winOcrLangsCache;
+  // 探测本身失败（超时 / 被安全软件拦）时也会得到空数组，但那个空数组
+  // **不能**缓存：服务一开就是好几天，一次偶发超时会让它在整个进程生命周期里
+  // 都认定「没有中文语言包」。失败只记 60 秒，下次请求再问一遍。
+  if (winOcrLangsFailAt && Date.now() - winOcrLangsFailAt < 60000) return [];
+  const script = [
+    '[void][Windows.Globalization.Language, Windows.Foundation, ContentType = WindowsRuntime]',
+    '[void][Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]',
+    '([Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages | ForEach-Object { $_.LanguageTag }) -join \',\'',
+  ].join('; ');
+  const r = spawnSync(PS_EXE, ['-NoProfile', '-NonInteractive', '-Command', script],
+    { encoding: 'utf8', timeout: 20000, windowsHide: true });
+  const langs = (r.stdout || '').split(',').map(s => s.trim()).filter(Boolean);
+  // status === 0 且没有 error 才算"问到了答案"——此时空数组是真答案（系统没装识别语言）
+  if (r && !r.error && r.status === 0) {
+    winOcrLangsCache = langs;
+    return langs;
+  }
+  winOcrLangsFailAt = Date.now();
+  return langs;
+}
+
 /** 后端有没有装齐（含中文包）——给自检和 /api/meta 用 */
 function health () {
   const b = backend();
   if (!b.name) return { ok: false, engine: null, reason: b.reason };
-  if (b.name === 'powershell') return { ok: true, engine: 'powershell', label: 'Windows OCR' };
+  if (b.name === 'powershell') {
+    const langs = windowsOcrLangs();
+    const hasZh = langs.some(l => /^zh/i.test(l));
+    return {
+      ok: hasZh,
+      engine: 'powershell',
+      label: hasZh ? 'Windows OCR' : 'Windows OCR（缺中文语言包）',
+      langs,
+      hint: hasZh ? null
+        : '系统没有中文 OCR 语言包，扫描件认不出中文。设置 → 时间和语言 → 语言 → 添加中文（简体，中国）后重试。PDF 文字层不受影响。',
+    };
+  }
   const hasChi = b.langs.some(l => l.startsWith('chi_sim') || l.startsWith('chi_tra'));
   return {
     ok: hasChi,
@@ -132,4 +180,4 @@ function health () {
   };
 }
 
-module.exports = { backend, describe, health, findTesseract, tesseractLangs, OCR_EXT, PS_EXE, PS1 };
+module.exports = { backend, describe, health, windowsOcrLangs, findTesseract, tesseractLangs, OCR_EXT, PS_EXE, PS1 };

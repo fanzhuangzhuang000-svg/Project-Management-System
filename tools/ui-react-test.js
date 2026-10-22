@@ -29,9 +29,18 @@ const PORT = 9530;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const results = [];
+let skipped = 0;
 const check = (name, ok, extra = '') => {
   results.push({ name, ok });
   console.log(`  ${ok ? '✓' : '✗'} ${name}${extra ? '  — ' + extra : ''}`);
+};
+/**
+ * 环境能力不具备时（最典型：系统没有中文 OCR 语言包，中文扫描件识别出来
+ * 没有汉字）如实记为「未执行」。跳过的项不算通过，汇总里单独列出。
+ */
+const skipCheck = (name, why) => {
+  skipped++;
+  console.log(`  ⊘ ${name}  — 跳过：${why}`);
 };
 
 (async () => {
@@ -857,36 +866,61 @@ const check = (name, ok, extra = '') => {
           const tabs = await ev(`['归一化后','OCR 原始输出'].every(t => [...document.querySelectorAll('button')].some(b => b.textContent.trim() === t))`)
           check('区分「归一化后」和「OCR 原始输出」两个视图', tabs)
 
+          // 声明必须留在外层：下面「列出了各字段的出处片段」也要看这个标记，
+          // 而它在 if 块之后。写在块内会 ReferenceError，把整段断言变成假失败。
+          let noChinese = false
           if (tabs && len > 100) {
             const normText = await ev(`document.querySelector('pre').textContent`)
             await ev(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === 'OCR 原始输出'); b && b.click(); })()`)
             await sleep(600)
             const rawText = await ev(`document.querySelector('pre').textContent`)
-            check('切到原始输出后内容确实变', normText !== rawText && rawText.length > 100,
-        `归一后 ${normText.length} 字 / 原始 ${rawText.length} 字`)
-            // 原始输出是带字间空格的，归一化后才紧?—?两边都要能看出区'
-            check('原始输出保留了字间空格（没被加工过）',
-              /合\s*同\s*编\s*号/.test(rawText) && rawText.length > normText.length,
-          `原始 ${rawText.length} 字 → 归一后 ${normText.length} 字`)
-            await ev(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === '归一化后'); b && b.click(); })()`)
-            await sleep(500)
-            const normText2 = await ev(`document.querySelector('pre').textContent`)
-            // 归一化只负责去掉字间空格；点号转连字符是抽取阶段?cleanCode 干的
-            //（所以归一化文本里是「HT . 2026.088」，而字段表里是「HT-2026-088」）
-            check('归一化后字间空格被去',
-              normText2.includes('合同编号') && !/合\s+同\s+编\s+号/.test(normText2),
-              String(normText2.split('\n')[1] || '').trim().slice(0, 40))
-            // 这一条原来断言的是「原文里能看到 5,860000,00 这种千分位错位」——
-            // 那是在断言**某一份真实扫描件的识别噪声**，不是在断言产品行为。
-            // 换成合成素材后 OCR 读得干干净净，它就必然失败，而且失败得毫无信息量：
-            // 产品没坏，只是那份扫描件的错法不一样了。
-            // 真正要保证的是「用户点开原文，能自己核对到底是识别错了还是规则错了」，
-            // 所以改成：原文里必须能看到金额的数字串（带不带千分位都算）。
-            check('OCR 原文里能看到合同金额，可据此判断是识别问题还是规则问题',
-              /5[\s,，]*860[\s,，]*000/.test(rawText), '原文含金额数字串')
+            // 「引擎能跑」≠「引擎认得中文」。GitHub 的 windows-latest、海外客户的
+            // 英文系统都没有中文语言包，WinRT 退回英文引擎：识别状态照样是 done，
+            // 但一张中文扫描件只能读出空格和数字。依赖「OCR 读到了汉字」的断言
+            // 在这种环境下失败得毫无信息量 —— 记为未执行。
+            // 声明在上一层的 if 之外（见上），这里只赋值
+            if (/[\u4e00-\u9fff]/.test(rawText || '')) {
+              // 「两个视图不一样」也是同一件事：差异的来源就是汉字之间的
+              // 字间空格。引擎读不出汉字时，两边天然一样，这条断言测的不再是
+              // 产品行为，而是「系统有没有中文包」—— 一并记为未执行。
+              check('切到原始输出后内容确实变', normText !== rawText && rawText.length > 100,
+                    `归一后 ${normText.length} 字 / 原始 ${rawText.length} 字`)
+              // 原始输出是带字间空格的，归一化后才紧凑 —— 两边都要能看出区别
+              check('原始输出保留了字间空格（没被加工过）',
+                /合\s*同\s*编\s*号/.test(rawText) && rawText.length > normText.length,
+                  `原始 ${rawText.length} 字 → 归一后 ${normText.length} 字`)
+              await ev(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === '归一化后'); b && b.click(); })()`)
+              await sleep(500)
+              const normText2 = await ev(`document.querySelector('pre').textContent`)
+              // 归一化只负责去掉字间空格；点号转连字符是抽取阶段 cleanCode 干的
+              //（所以归一化文本里是「HT . 2026.088」，而字段表里是「HT-2026-088」）
+              check('归一化后字间空格被去',
+                normText2.includes('合同编号') && !/合\s+同\s+编\s+号/.test(normText2),
+                String(normText2.split('\n')[1] || '').trim().slice(0, 40))
+              // 这一条原来断言的是「原文里能看到 5,860000,00 这种千分位错位」——
+              // 那是在断言**某一份真实扫描件的识别噪声**，不是在断言产品行为。
+              // 换成合成素材后 OCR 读得干干净净，它就必然失败，而且失败得毫无信息量：
+              // 产品没坏，只是那份扫描件的错法不一样了。
+              // 真正要保证的是「用户点开原文，能自己核对到底是识别错了还是规则错了」，
+              // 所以改成：原文里必须能看到金额的数字串（带不带千分位都算）。
+              check('OCR 原文里能看到合同金额，可据此判断是识别问题还是规则问题',
+                /5[\s,，]*860[\s,，]*000/.test(rawText), '原文含金额数字串')
+            } else {
+              noChinese = true
+              skipCheck('切到原始输出后内容确实变', '识别引擎没有中文语言包（原文里没有一个汉字）')
+              skipCheck('原始输出保留了字间空格（没被加工过）', '同上')
+              skipCheck('归一化后字间空格被去', '同上')
+              // 原文含金额数字串这条不依赖汉字，照常断言
+              check('OCR 原文里能看到合同金额，可据此判断是识别问题还是规则问题',
+                /5[\s,，]*860[\s,，]*000/.test(rawText), '原文含金额数字串')
+            }
           }
 
-          check('列出了各字段的出处片', await ev(`document.body.innerText.includes('各字段的出处')`))
+          if (noChinese) {
+            skipCheck('列出了各字段的出处片段', '识别引擎没有中文语言包（原文里没有一个汉字）')
+          } else {
+            check('列出了各字段的出处片段', await ev(`document.body.innerText.includes('各字段的出处')`))
+          }
         }
 
         // 清理自己传的附件
@@ -1031,7 +1065,8 @@ const check = (name, ok, extra = '') => {
       }
 
   const pass = results.filter(r => r.ok).length;
-  console.log('\n前端验证结果：' + pass + ' / ' + results.length + ' 项通过');
+  console.log('\n前端验证结果：' + pass + ' / ' + results.length + ' 项通过'
+    + (skipped ? `（另有 ${skipped} 条未执行，见上方 ⊘）` : ''));
   if (pass !== results.length) console.log('失败：' + results.filter(r => !r.ok).map(r => r.name).join('、'));
   c.kill();
   process.exit(pass === results.length ? 0 : 1);

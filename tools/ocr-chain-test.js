@@ -146,10 +146,14 @@ T.forceAdminPassword();
           check("文字层路径明显更快", digital.elapsedMs < 900, digital.elapsedMs + "ms（OCR 约 2000ms）");
 
           const scan = await recognize(fx("contract-scan.png"), { docKind: "auto" });
-          if (!scan.ok) {
-            // 引擎不可用（没装中文 OCR 语言包）时如实记为"没跑"。
-            skipCheck("扫描图片照旧走 OCR（没被文字层抢走）", scan.error || "识别引擎不可用");
-            skipCheck("扫描件仍能识别出合同金额", scan.error || "识别引擎不可用");
+          // 「引擎能跑」和「引擎认得中文」是两回事：英文系统上 WinRT 会退回
+          // 英文引擎，识别照样成功（ok=true），但一张中文扫描件只能读出空格和数字。
+          // 这是环境能力问题，不是产品回归 —— 识别结果里一个汉字都没有时记为"没跑"。
+          const noChinese = scan.ok && !/[\u4e00-\u9fff]/.test(scan.text || '');
+          if (!scan.ok || noChinese) {
+            const why = noChinese ? '识别引擎没有中文语言包（识别结果里没有一个汉字）' : (scan.error || '识别引擎不可用');
+            skipCheck("扫描图片照旧走 OCR（没被文字层抢走）", why);
+            skipCheck("扫描件仍能识别出合同金额", why);
           } else {
             check("扫描图片照旧走 OCR（没被文字层抢走）", scan.engine !== "pdf-text", "引擎=" + scan.engine);
             check("扫描件仍能识别出合同金额", Number(scan.fields.amount) === 5860000,

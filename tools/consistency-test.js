@@ -260,6 +260,98 @@ const who = A.fromRequest({ headers: { cookie: 'pms_session=' + sess.token }, so
 check('刚建的会话可立刻使用', !!who && who.id === uid, who ? `用户 #${who.id}` : '认不出来');
 
 // ================================================================
+console.log('\n[6] 回收站：删掉的东西必须真的进得去');
+
+require('../attachments.js').createTable();
+const trash = require('../trash.js');
+trash.createTable();
+
+// push() 的 INSERT 里有 tenant_id，而这张表由 createTable() 自己建、多租户迁移
+// 又没把它算进去 —— 列不存在时每次删除都在快照这一步抛错，server.js 的 catch
+// 只打一行日志就接着删：数据没了、回收站是空的、还原无从谈起。
+const tcols = db.prepare('PRAGMA table_info(trash)').all().map(c => c.name);
+check('trash 表有 tenant_id 列（push 会写它）', tcols.includes('tenant_id'), tcols.join(','));
+
+/**
+ * 按 server.js 删除端点的顺序来：先快照、再删。
+ * 有关联数据时线上走的是 deleteCascade（列表页点了「确定继续」之后），
+ * 所以这里也用 deleteCascade —— 只测 deleteRow 的话，级联那半条路根本没人走。
+ */
+function snapshotAndDelete (table, id) {
+  const before = db.prepare('SELECT COUNT(*) n FROM trash').get().n;
+  let err = null, tid = null;
+  try {
+    const payload = trash.capture(table, [id]);
+    tid = trash.push(table, [id], payload, 'consist', '口径测试');
+  } catch (e) { err = e.message; }
+  const added = db.prepare('SELECT COUNT(*) n FROM trash').get().n - before;
+  const del = dbf.deleteCascade(table, id);
+  return { err, tid, added, del };
+}
+
+const P6 = mkProject('口径-回收站');
+const C6 = mkContract(P6, { amount: 300000, sign_date: '2025-01-05', end_date: '2025-09-30' });
+const ch6 = dbf.insertRow('contract_changes', {
+  project_id: P6, contract_id: C6, title: '追加门禁点位',
+  change_type: '增补金额', change_date: '2025-05-01', amount: 20000,
+});
+if (ch6.error) throw new Error('建变更失败：' + ch6.error);
+
+const d6 = snapshotAndDelete('contracts', C6);
+// 撤销关联表的键名写成了 contracts_changes（表叫 contract_changes），
+// capture() 直接拿键名拼 SQL → no such table → 快照整段失败。
+check('删合同能进回收站', !d6.err && d6.added === 1, d6.err || `回收站新增 ${d6.added} 条`);
+// 级联删除曾把变更记录的 contract_id 置 NULL，而那一列是 NOT NULL：
+// 「删除带变更记录的合同」直接 constraint failed，用户怎么点都删不掉。
+check('带变更记录的合同能删掉（级联不撞 NOT NULL）', !!d6.del && !d6.del.error,
+  d6.del && d6.del.error ? d6.del.error : '删除成功');
+
+const rs6 = trash.restore(d6.tid);
+// 判据要带上 restored 条数：只看"库里有没有这条"会在删除本身失败时误判成通过
+// （删除被回滚 → 合同还在 → 看起来还原成功了，其实一条都没还原）。
+check('还原后合同回到库里', !!rs6 && rs6.ok && rs6.restored >= 1
+  && !!db.prepare('SELECT 1 FROM contracts WHERE id = ?').get(C6),
+  d6.tid ? JSON.stringify(rs6) : '没有可还原的快照');
+const ch6back = db.prepare('SELECT contract_id FROM contract_changes WHERE id = ?').get(ch6.id);
+check('还原后变更记录重新挂回合同', !!ch6back && ch6back.contract_id === C6,
+  ch6back ? `contract_id=${ch6back.contract_id}（期望 ${C6}）` : '变更记录不见了');
+
+// 删项目是级联最多的一条路：CASCADE_DELETE 里任何一张表名写错，整批快照就没了
+const d7 = snapshotAndDelete('projects', P6);
+check('删项目能进回收站', !d7.err && d7.added === 1, d7.err || `回收站新增 ${d7.added} 条`);
+const snap7 = d7.tid ? trash.get(d7.tid) : null;
+check('删项目时把子记录一起快照下来', !!snap7 && snap7.payload.rows.length > 1,
+  snap7 ? `快照 ${snap7.payload.rows.length} 行` : '没有快照');
+// restore() 按数组顺序逐行 INSERT。父记录排在子记录后面时，现在靠"没有外键"
+// 侥幸能过；一旦 schema 补上 FOREIGN KEY，还原就会全线失败。
+const pIdx = snap7 ? snap7.payload.rows.findIndex(r => r.table === 'projects') : -1;
+check('快照里父记录排在子记录之前', pIdx === 0, `projects 在第 ${pIdx + 1} 条`);
+
+// 真实可达的孤儿路径：变更记录的 project_id 是在**建记录那一刻**从合同带出来的
+// （applyDerived 自动填），之后合同被换到别的项目，变更记录上的 project_id 不会跟着变。
+// 这时删新项目 → 合同被删 → 变更记录成了指向已删合同的孤儿行。
+// 所以删项目必须按「合同归属」再兜一遍，不能只按变更记录自己的 project_id。
+const P8 = mkProject('口径-孤儿变更');
+const P8b = mkProject('口径-孤儿变更B');
+const C8 = mkContract(P8, { amount: 5000, sign_date: '2025-01-02', end_date: '2025-06-30' });
+const ch8 = dbf.insertRow('contract_changes', {
+  contract_id: C8, title: '只挂了合同', change_type: '增补金额',
+  change_date: '2025-06-01', amount: 100,
+});
+if (ch8.error) throw new Error('建变更失败：' + ch8.error);
+const moved8 = dbf.updateRow('contracts', C8, { project_id: P8b });
+if (moved8 && moved8.error) throw new Error('改合同项目失败：' + moved8.error);
+
+const d8 = snapshotAndDelete('projects', P8b);
+const ch8left = db.prepare('SELECT contract_id FROM contract_changes WHERE id = ?').get(ch8.id);
+check('删项目连带删掉「合同换过项目」的变更记录', !ch8left,
+  ch8left ? `变更记录还在库里（指向已删除的合同 #${ch8left.contract_id}）` : '已随项目一起删除');
+const snap8 = d8.tid ? trash.get(d8.tid) : null;
+check('这类变更也进了快照（否则删了还原不回来）',
+  !!snap8 && snap8.payload.rows.some(r => r.table === 'contract_changes' && r.data.id === ch8.id),
+  snap8 ? `快照 ${snap8.payload.rows.length} 行` : '没有快照');
+
+// ================================================================
 const badRows = results.filter(r => !r.ok);
 console.log(`\n${results.length - badRows.length} / ${results.length} 项通过${skipped ? `（另跳过 ${skipped} 条）` : ''}`);
 if (badRows.length) {

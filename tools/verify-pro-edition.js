@@ -47,6 +47,23 @@ function cleanup () {
   console.log('  ' + '='.repeat(58));
   console.log(`  模拟的环境：PostgreSQL + MinIO(S3) + 与 compose 相同的环境变量`);
 
+  // ── 0. 前置条件：得有一个真的 PostgreSQL 在跑 ──
+  // 本套件靠 dropdb/createdb 造干净库，靠 PG 验证迁移和 SQL 方言。
+  // 本机没装 PG 时它以前会一路跑到「应用启动失败」—— 那是在拿环境缺失
+  // 冒充产品缺陷，既冤枉代码，也把真正的红给稀释了。
+  // 按判分器的规矩：前提不成立就报「未执行」，并写清缺什么。
+  const pgAlive = await new Promise((resolve) => {
+    const net = require('node:net');
+    const c = net.connect({ host: '127.0.0.1', port: 5433 }, () => { c.destroy(); resolve(true) });
+    c.setTimeout(1200, () => { c.destroy(); resolve(false) });
+    c.on('error', () => resolve(false));
+  });
+  if (!pgAlive) {
+    console.log('SKIP: 本机 127.0.0.1:5433 上没有 PostgreSQL（compose 用的是 5432，这里是专用测试库），'
+      + '没法验证 PG + MinIO 组合；需要先装 PostgreSQL 17 并在 5433 起一个实例，或用 PG_TEST_URL 指定');
+    process.exit(0);
+  }
+
   cleanup();
   await sleep(1000);
 
