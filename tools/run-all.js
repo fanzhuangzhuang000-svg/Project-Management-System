@@ -232,6 +232,11 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 这套自己起服务。起源：删项目时 contract_changes 既不在删除提示里、也不在附件
     // 清理清单里；而附件在删除的当下就被真删了，界面却承诺「30 天内可以还原」。
     ['级联删除与回收站', 'cascade-trash-test.js'],
+    // 日常维护：只有「不重启也照样做」才叫日常。这套把维护间隔压到 800ms，
+    // 造一条 40 天前删的回收站条目，看它在服务运行期间会不会被清掉。
+    // 起源：过期会话/暂存附件/回收站清理/月度快照/每日备份原来只在启动时跑一次，
+    // 单机版装完一直开着 → 一个月后回收站还满着、备份只有一份。
+    ['日常维护', 'maintenance-test.js'],
   ];
   head(`3/6  主程序测试（${SUITES.length} 套件）`);
   let suitePass = 0, suiteTotal = 0, skipped = 0;

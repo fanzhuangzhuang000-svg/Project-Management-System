@@ -2177,22 +2177,44 @@ if (!seedResult.existed) {
   }
 }
 
-// 清理过期会话
-const sessionsPurged = auth.purgeExpired();
+// ---------------- 日常维护 ----------------
+// 过期会话 / 超过 7 天的暂存附件 / 回收站超期条目（连附件文件）/ 月度快照 / 每日自动备份，
+// 全部集中在 maintenance.runDaily() 里，启动时跑一次，之后**每小时**再跑一次。
+//
+// ⚠️ 以前这几件事只在启动那一刻做。单机版装完就一直开着（关浏览器不等于关服务），
+//    一台连续开一个月的机器上：回收站永远不清理（「保留 30 天」形同虚设，附件文件一起堆着）、
+//    自动备份只有装完那天的一份、暂存附件与过期会话一直不回收、月度快照缺月。
+const maintenance = require('./maintenance.js');
+const dailyBoot = maintenance.runDaily();
+const purged = dailyBoot.orphans;
+const trashPurged = dailyBoot.trash;
+const snapMade = dailyBoot.snap;
+const autoBackup = dailyBoot.backup;
+for (const e of dailyBoot.errors || []) console.log('  [维护] ' + e);
 
-// 启动清理：删掉超过 7 天仍未归属任何记录的暂存附件
-const purged = attach.purgeOrphans(7);
-// 回收站只保留 30 天，过期自动彻底删除（连附件文件）
-const trashPurged = trash.autoPurge(trash.KEEP_DAYS);
-// 上个月还没结账快照的话，补记一份（用于事后看趋势）
-const snapMade = snap.ensureMonthly();
+// 每小时检查一次。每个动作都有幂等判断（今天备份过就不再备、只删超过 N 天的），
+// 所以跑得再频繁也不会重复干活。unref() —— 这个定时器不该拖住进程退出。
+// 间隔可以用 PMS_MAINTENANCE_INTERVAL_MS 覆盖：测试要验证「运行期也会清」，
+// 不能真等一个小时（tools/maintenance-test.js 就是这么用的）。
+const MAINTENANCE_INTERVAL_MS = Number(process.env.PMS_MAINTENANCE_INTERVAL_MS) > 0
+  ? Number(process.env.PMS_MAINTENANCE_INTERVAL_MS)
+  : 60 * 60 * 1000;
+setInterval(() => {
+  try {
+    const r = maintenance.runDaily();
+    if (r.backup && r.backup.ok) console.log('[维护] 已自动备份：' + (r.backup.file || r.backup.name || ''));
+    if (r.trash && r.trash.purged) {
+      console.log(`[维护] 回收站清理 ${r.trash.purged} 项（超过 ${trash.KEEP_DAYS} 天），附赠删除文件 ${r.trash.removedFiles || 0} 个`);
+    }
+    for (const e of r.errors || []) console.log('  [维护] ' + e);
+  } catch (e) {
+    console.log('  [维护] 本次维护失败（服务继续运行）：' + e.message);
+  }
+}, MAINTENANCE_INTERVAL_MS).unref();
+
 // 断点续跑：上次没跑完的识别任务重新入队
 for (const r of attach.list({ status: 'pending' }).rows) queueOcr(r.id);
 for (const r of attach.list({ status: 'running' }).rows) queueOcr(r.id);
-
-// 启动时如果今天还没备份过，自动备一份（防止误删/误操作）
-let autoBackup = null;
-if (!bk.hasBackupToday()) autoBackup = bk.makeBackup('auto');
 
 server.listen(PORT, HOST, () => {
   const ips = lanAddresses();
