@@ -14,12 +14,14 @@ const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
-const BASE = process.env.PMS_BASE || 'http://127.0.0.1:8787';
+// 基址和默认端口都来自 tools/test-base.js —— 那里写了为什么不能默认 8787
+// （8787 是用户正式实例的端口，测试连上去就是拿真实库做实验）。
+const { BASE, TEST_PORT, DATA_DIR } = require('./test-base.js');
 // 端口从 BASE 推导，而不是写死 8787：
 // 本机已经装了一份在跑的正式系统时（它占着 8787），测试要能换端口跑，
 // 否则只能先停掉正在用的服务 —— 这正是之前踩过的坑。
 const PORT = (() => {
-  try { const u = new URL(BASE); return u.port || (u.protocol === 'https:' ? '443' : '80') } catch { return '8787' }
+  try { const u = new URL(BASE); return u.port || (u.protocol === 'https:' ? '443' : '80') } catch { return TEST_PORT }
 })();
 const npm = process.env.PMS_NPM || 'npm';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -75,10 +77,10 @@ const CI_SKIP = new Map([
   // 需要装 PostgreSQL + MinIO 才能跑。CI 的 windows-latest 上没有这套栈，
   // 要补就得在 workflow 里起 service container，属于另开一条集成流水线的事。
   ['verify-pro-edition.js', '需要真实 PostgreSQL + MinIO 栈（CI 未起服务）'],
-  // 需要先产出安装包 exe。CI 的打包发生在 run-all 之后（build-artifacts），
-  // 所以这里排不进同一次运行 —— 但**不是不跑**：ci.yml 里有一个独立的
-  // 「装机验证」步骤，在打完包之后调 tools/verify-installed.js。
-  ['verify-installed.js', '需安装包 exe；由 CI 的「装机验证」步骤在打包后单独执行'],
+  // verify-installed.js 原来也在这里，理由是"CI 里 run-all 跑的时候还没打包"。
+  // 现在它已从第 3 步挪到第 6 步（打完包之后），跳不跳由"有没有比源码新的包"
+  // 决定，不再需要按环境写死。CI 自己的打包在 run-all 之后，所以那边仍然走
+  // 第 6 步的 skip 分支，并另有一个独立步骤在打包后调它 —— 两处语义一致。
 ]);
 const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
 
@@ -91,14 +93,47 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   head('0/6  环境检查');
   let up = false;
   try { const r = await fetch(BASE + '/api/health'); up = r.ok } catch { /* 没起 */ }
+  // 自己起的服务最后要关掉（见文件末尾），否则下次跑测试会连上一个数据目录
+  // 已经对不上的老进程 —— 那正是 2026-10 那次"密码永远不对"的成因之一。
+  let ownServerPid = 0;
   if (!up) {
-    console.log('    服务没在跑，正在启动…');
+    console.log(`    服务没在跑，正在启动测试实例（端口 ${PORT} · 数据目录 ${DATA_DIR}）…`);
     const { spawn } = require('node:child_process');
-    spawn('node', ['--no-warnings', 'server.js', '--port', PORT], { cwd: ROOT, stdio: 'ignore', detached: true }).unref();
+    const child = spawn('node', ['--no-warnings', 'server.js', '--port', PORT], {
+      cwd: ROOT, stdio: 'ignore', detached: true,
+      // ⚠️ 显式指定 PMS_DATA_DIR：测试进程改库和请求服务必须落在**同一个库**上。
+      //    不写的话两边各自按 cwd 去猜默认值，cwd 一变就错位。
+      env: { ...process.env, PMS_DATA_DIR: DATA_DIR },
+    });
+    ownServerPid = child.pid;
+    child.unref();
     for (let i = 0; i < 30 && !up; i++) { await sleep(500); try { const r = await fetch(BASE + '/api/health'); up = r.ok } catch { /* 等 */ } }
+  } else {
+    console.log(`    复用已在运行的实例（${BASE}）`);
   }
   row('服务可访问', up, up ? BASE : '✗ 启动失败');
   if (!up) { console.log('\n  服务起不来，后面的测试没有意义，先解决它。'); process.exit(1) }
+  // 及早验证"服务读的库 == 测试要改的库"，别等跑到一半才红一片
+  {
+    let sameDb = true, why = '';
+    try {
+      const h = await (await fetch(BASE + '/api/health')).json();
+      const me = require('../db.js');
+      const crypto = require('node:crypto');
+      const hash = s => crypto.createHash('sha1')
+        .update(path.resolve(String(s || '')).replace(/\\/g, '/').toLowerCase()).digest('hex').slice(0, 12);
+      if (!h.dbId) { sameDb = false; why = '服务版本太旧，health 没有 dbId' } else if (h.dbId !== hash(me.DB_FILE)) {
+        sameDb = false;
+        why = `服务端读的是 ${h.db}（dbId ${h.dbId}），测试端要改的是 ${me.DB_FILE}`;
+      }
+    } catch (e) { sameDb = false; why = e.message.slice(0, 120) }
+    row('库一致性', sameDb, sameDb ? '服务端与测试端是同一个库' : '✗ ' + why);
+    if (!sameDb) {
+      console.log('\n  测试进程和服务读的不是同一个数据库 —— 继续跑只会写坏数据，先停下。');
+      if (ownServerPid) { try { process.kill(ownServerPid) } catch { /* 已退出 */ } }
+      process.exit(1);
+    }
+  }
 
   // ---------- 1. 前端构建 ----------
   head('1/6  前端构建（tsc 类型检查 + vite 打包）');
@@ -133,7 +168,12 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     ['升级迁移', 'migration-test.js'], ['MinIO 存储', 'minio-mock-test.js'],
     ['Docker 配置', 'verify-compose.js'],
     ['示例数据一致性', 'reseed-atomic-test.js'],
-    ['装机验证', 'verify-installed.js'],
+    // ⚠️ 「装机验证」(verify-installed.js) 不在这个列表里。
+    //    它验的是"装出来的包 == 仓库代码吗"，而安装包要到第 5 步才生成。
+    //    放在这里会验到**上一次**打的包：本机实际跑出过
+    //    「★ 包内代码与仓库一致 — 不一致：server.js」，原因是第 3 步装的是
+    //    dist-installer 里改动前的旧包，第 5 步才重新打。现已挪到第 6 步，
+    //    紧跟在打包之后 —— 那条断言本来就是为这种时序错位写的，结果它先抓到了自己。
     ['多租户隔离', 'tenant-test.js'],
     ['专业版集成', 'verify-pro-edition.js'],
     ['AI 助手', 'ai-test.js'], ['React 界面', 'ui-react-test.js'],
@@ -312,14 +352,17 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
 
   if (!exeForVerify || !fs.existsSync(exeForVerify)) {
     skip('常规验证（装→跑→卸）', '还没打安装包；先跑 npm run dist 或 node tools/build-installer.js');
+    skip('装机验证', '还没打安装包（它要打开包里的 app/server.js 逐字节比对）');
     skip('覆盖安装（服务在跑时覆盖）', '还没打安装包；同上');
   } else if (exeStale) {
     // 这一步以前不存在，代价是「改了安装脚本但没重新打包」时，
     // 验证跑的是上一次的包 —— 要么假绿（旧包刚好没问题），要么假红（旧包的毛病）。
     skip('常规验证（装→跑→卸）', '安装包比源码旧，先重新打包（node tools/build-installer.js）');
+    skip('装机验证', '安装包比源码旧 —— 验它等于验上一版代码');
     skip('覆盖安装（服务在跑时覆盖）', '安装包比源码旧，同上');
   } else if (!fs.existsSync(fixturePdf)) {
     skip('常规验证（装→跑→卸）', '缺识别素材 tools/fixtures/contract.pdf（跑 node tools/fixtures/make-fixtures.js 生成）');
+    skip('装机验证', '缺识别素材 tools/fixtures/contract.pdf（装机验证要走完整 OCR 链路）');
     skip('覆盖安装（服务在跑时覆盖）', '缺识别素材 tools/fixtures/contract.pdf');
   } else {
     {
@@ -327,6 +370,15 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
       const ok = /全部通过/.test(r.out);
       const m = /(\d+)\s*\/\s*(\d+) 项通过/.exec(r.out);
       row('常规验证（装→跑→卸）', ok, m ? m[0] : (ok ? '全部通过' : '✗ 有失败'));
+      if (!ok) console.log(r.out.split('\n').filter(l => l.includes('✗')).slice(0, 6).map(l => '        ' + l.trim()).join('\n'));
+    }
+    // 装机验证紧跟在这里 —— 它比对的是"包里的 server.js 与仓库是否逐字节相同"，
+    // 必须用**刚落盘**的包，不能是上一次的。
+    {
+      const r = runNode(path.join('tools', 'verify-installed.js'));
+      const ok = /全部通过|(\d+)\s*\/\s*(\d+) 项通过/.test(r.out) && !/\d+ 项失败/.test(r.out);
+      const m = /(\d+)\s*\/\s*(\d+) 项通过/.exec(r.out);
+      row('装机验证', ok, m ? m[0] : (ok ? '全部通过' : '✗ 有失败'));
       if (!ok) console.log(r.out.split('\n').filter(l => l.includes('✗')).slice(0, 6).map(l => '        ' + l.trim()).join('\n'));
     }
     // 两个安装验证都用临时目录，紧挨着跑会因为文件锁互相干扰
@@ -362,5 +414,11 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   if (!bad.length && !skippedRows.length) console.log('    ✓ 全部通过（无跳过、无失败）');
   console.log('  ' + '═'.repeat(58));
   console.log('');
+  // 关掉本次自己起的测试实例。不关的话端口会一直被占着，下次跑测试就"复用"
+  // 这个老进程 —— 而它的数据目录、代码版本都可能是上一次的，排查时会把人绕死。
+  // 只关自己起的那个：复用已有实例时 ownServerPid 是 0。
+  if (ownServerPid) {
+    try { process.kill(ownServerPid); console.log('  （已关闭本次启动的测试实例）') } catch { /* 已退出 */ }
+  }
   process.exit(bad.length ? 1 : 0);
 })().catch(e => { console.error('\n  ✗ 全量验证失败：' + e.message); process.exit(1) });

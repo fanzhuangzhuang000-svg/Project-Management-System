@@ -59,6 +59,18 @@ function detectVersion () {
 }
 const VERSION = detectVersion();
 
+/**
+ * 数据库实例指纹。/api/health 是**未登录可达**的，所以只能给一个哈希：
+ *   · 目的：让测试/运维判断「我连的这个服务和我要操作的库是不是同一个」。
+ *     2026-10 踩过：测试进程改的是 A 库的密码，请求却打到读 B 库的服务上，
+ *     于是凭据永远对不上，testadmin 反复失败最终被锁，成套红掉。
+ *   · 不能直接回显路径：那等于把服务器目录结构告诉任何一个能访问端口的人。
+ * 取前 12 位足够了 —— 这里只做相等比较，不需要抗碰撞。
+ */
+const DB_ID = require('node:crypto').createHash('sha1')
+  .update(require('node:path').resolve(String(dbf.DB_FILE || '')).replace(/\\/g, '/').toLowerCase())
+  .digest('hex').slice(0, 12);
+
 // ---------------- 参数 ----------------
 function argVal (name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -589,7 +601,15 @@ async function handleApi (req, res, url) {
   const method = req.method.toUpperCase();
 
   if (head === 'health') {
-    return sendJSON(res, 200, { ok: true, app: APP_NAME, version: VERSION, db: dbf.DB_FILE_SAFE, time: dbf.nowISO(), needLogin: true, settings: publicSettings() });
+    // ⚠️ db 只给**文件名**，不给完整路径。这里以前直接回显 dbf.DB_FILE_SAFE，
+    //    SQLite 下那就是 C:\Users\xxx\AppData\...\data\pms.db ——
+    //    而这个接口未登录就能访问，等于把目录结构送出去。
+    //    需要判断"是不是同一个库"的场景（测试、运维）用 dbId 指纹。
+    return sendJSON(res, 200, {
+      ok: true, app: APP_NAME, version: VERSION,
+      db: require('node:path').basename(String(dbf.DB_FILE || '')), dbId: DB_ID,
+      time: dbf.nowISO(), needLogin: true, settings: publicSettings(),
+    });
   }
 
   // ---------------- 登录 / 会话 ----------------

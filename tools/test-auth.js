@@ -11,7 +11,9 @@
 const path = require('node:path');
 
 const crypto = require('node:crypto');
-const BASE = process.env.PMS_BASE || 'http://127.0.0.1:8787';
+// 默认端口来自 tools/test-base.js —— 绝不再默认 8787（那是用户正式实例的端口，
+// 详见该文件顶部的事故说明）。
+const { BASE } = require('./test-base.js');
 // 测试专用管理员账号：不碰真实的 admin，避免跑完测试把用户密码改掉。
 // 密码每次随机生成，只存在内存里——即使账号忘了删，也没人知道密码。
 const USER = 'testadmin';
@@ -69,7 +71,50 @@ function unlockAll () {
 /** 本进程是否已经确保过示例数据（只做一次，避免每个测试都重建） */
 let demoEnsured = false
 
+/**
+ * 动手之前先确认：**服务端读的那个库，就是本进程要改的那个库**。
+ *
+ * 为什么非要这一道：测试是"两条腿"——一条腿在测试进程里直接改库（设密码、清锁定、
+ * 重置示例数据），另一条腿是往 BASE 发 HTTP 请求。两条腿只要指向不同的库，
+ * 症状就非常难认：改密码成功、登录却一直失败，看起来像"密码逻辑有 BUG"，
+ * 实际是两个库。2026-10 就是这样红的 15 个套件，而且最后锁的是用户真实库里的账号。
+ *
+ * 判据用 /api/health 的 dbId（路径哈希，不泄露路径），不用路径字符串比对。
+ */
+let dbChecked = false;
+async function assertSameDb () {
+  if (dbChecked) return;
+  let h;
+  try {
+    const r = await fetch(BASE + '/api/health');
+    h = await r.json();
+  } catch (e) {
+    throw new Error(`连不上测试服务 ${BASE}。先在仓库根目录跑 node tools/run-all.js（它会自己起一个 8899 的测试实例），或用 PMS_BASE 指定地址。`);
+  }
+  const dbf = require('../db.js');
+  // 归一化必须和 server.js 的 DB_ID 完全一致（resolve + 斜杠 + 小写），
+  // 否则同一台机器上 C:\ vs c:\ 就能让判据假红。
+  const mine = crypto.createHash('sha1')
+    .update(path.resolve(String(dbf.DB_FILE || '')).replace(/\\/g, '/').toLowerCase())
+    .digest('hex').slice(0, 12);
+  if (!h.dbId) {
+    throw new Error(`服务端 ${BASE} 没有返回 dbId（版本太旧），无法确认它读的是哪个库。请用当前代码重启服务后重试。`);
+  }
+  if (h.dbId !== mine) {
+    throw new Error(
+      `测试端和被测服务用的不是同一个数据库 —— 拒绝继续（否则会写坏别人的数据）。\n` +
+      `  测试进程：${dbf.DB_FILE}\n` +
+      `  被测服务：${h.db}（dbId ${h.dbId}）\n` +
+      `  服务地址：${BASE}\n` +
+      `  处理：停掉那个服务，用 node tools/run-all.js 起一个测试实例；` +
+      `或把 PMS_DATA_DIR 设成服务端用的目录并重启服务。`
+    );
+  }
+  dbChecked = true;
+}
+
 async function login (username = USER, password = PASS) {
+  await assertSameDb();
   // 测试辅助：登录前把本账号的失败计数清掉。
   // 前面某个用例故意试错密码（OCR/登录相关断言）会触发 5 次锁定，
   // 之后所有后续 T.login() 都会被拒 —— 但密码本身是对的，不该被连带锁死。

@@ -6,7 +6,7 @@
  *   1) 纯函数（生成/校验/防伪）—— 不依赖服务
  *   2) 服务端集成 —— 授权状态、过期只读、续费放行、账号数上限
  *
- * 用法： node tools/license-test.js [http://127.0.0.1:8787]
+ * 用法： node tools/license-test.js [http://127.0.0.1:8899]
  */
 const L = require('./license.js');
 const T = require('./test-auth.js');

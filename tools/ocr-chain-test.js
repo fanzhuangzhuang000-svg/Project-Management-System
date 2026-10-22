@@ -1,12 +1,12 @@
 'use strict';
 /**
  * 附件识别链路测试：上传扫描件 → OCR → 用识别结果新建记录 → 扫描件自动归位
- * 用法： node tools/ocr-chain-test.js [http://127.0.0.1:8787]
+ * 用法： node tools/ocr-chain-test.js [http://127.0.0.1:8899]
  */
 const fs = require('node:fs');
 const path = require('node:path');
 const T = require('./test-auth.js');
-const BASE = process.argv[2] || T.BASE || 'http://127.0.0.1:8787';
+const BASE = process.argv[2] || T.BASE;
 
 const results = [];
 let skipped = 0;

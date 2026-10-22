@@ -2,10 +2,10 @@
 /**
  * 八项优化功能的回归测试
  *  ①登录限速 ②到期预警 ③发票勾稽 ④费用计入应付 ⑤合同变更 ⑥月度快照
- * 用法： node tools/upgrade-test.js [http://127.0.0.1:8787]
+ * 用法： node tools/upgrade-test.js [http://127.0.0.1:8899]
  */
 const T = require('./test-auth.js');
-const BASE = process.argv[2] || T.BASE || 'http://127.0.0.1:8787';
+const BASE = process.argv[2] || T.BASE;
 
 const results = [];
 function check (name, ok, extra = '') {

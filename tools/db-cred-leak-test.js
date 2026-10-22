@@ -67,7 +67,26 @@ ok(badEchos.length === 0,
   badEchos.length + ' 处：' + badEchos.map(m => m[1]).join(', '));
 
 const safeUses = [...src.matchAll(/dbf\.DB_FILE_SAFE/g)];
-ok(safeUses.length >= 3, '三处响应都改用 DB_FILE_SAFE', '实际 ' + safeUses.length + ' 处');
+// 改过：health 不再回显数据库标识（见下一段），所以这里只剩需要登录的接口
+// (/api/me、/api/settings) 用 DB_FILE_SAFE。原来是 >=3（含 health）。
+ok(safeUses.length >= 2, '登录后的接口仍用脱敏值（不是 DB_FILE 原文）', '实际 ' + safeUses.length + ' 处');
+
+// ── 4. /api/health 不得回显数据库路径 ──
+// SQLite 模式下 DB_FILE 就是绝对路径（C:\Users\xxx\AppData\...\data\pms.db）。
+// 以前 health 直接回显它 —— 这个接口**未登录可达**，等于把"谁的机器、装在哪个目录"
+// 告诉任何能连上端口的人。现在只给文件名，另外给一个 dbId 哈希供测试判断是不是同一个库。
+const healthSrc = (src.match(/if \(head === 'health'\)[\s\S]*?\n  \}/) || [''])[0];
+ok(healthSrc.length > 0, '找到了 health 分支（否则下面的断言是空转）');
+// 判据是"路径没有被 basename 包起来"，不是"health 里不许出现 DB_FILE"：
+// 正确写法就是 path.basename(String(dbf.DB_FILE || '')) —— 出现是应该的，
+// 直接塞进响应对象才是问题。
+const refs = [...healthSrc.matchAll(/dbf\.DB_FILE\b/g)].length;
+const wrapped = [...healthSrc.matchAll(/basename\([^)]*dbf\.DB_FILE\b/g)].length;
+ok(!/dbf\.DB_FILE_SAFE/.test(healthSrc) && refs === wrapped,
+  'health 只以 basename(dbf.DB_FILE) 的形式用到路径，没有原样回显',
+  `引用 ${refs} 处，其中被 basename 包住 ${wrapped} 处`);
+ok(/\bbasename\b/.test(healthSrc), 'health 的 db 字段取了 basename');
+ok(/\bdbId\b/.test(healthSrc), 'health 提供 dbId 指纹（测试用它判断"是不是同一个库"）');
 
 // 启动横幅仍应打完整值（运维排查要看）
 ok(/console\.log\([^)]*dbf\.DB_FILE[^_A-Z]/.test(src),

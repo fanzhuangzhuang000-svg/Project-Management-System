@@ -5,7 +5,7 @@
  * 用最小权限账号（只能读材料设备）探测所有接口，不该看的必须 403。
  */
 const T = require('./test-auth.js');
-const BASE = process.argv[2] || T.BASE || 'http://127.0.0.1:8787';
+const BASE = process.argv[2] || T.BASE;
 
 const results = [];
 function check (name, ok, extra = '') {
