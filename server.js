@@ -265,7 +265,24 @@ function parsePartHeaders (text) {
   }
   const cd = h['content-disposition'] || '';
   h.name = (/name="([^"]*)"/.exec(cd) || [])[1];
-  h.filename = (/filename="([^"]*)"/.exec(cd) || [])[1];
+  /**
+   * 文件名要按 RFC 7578 解一层百分号转义。
+   *
+   * 浏览器上传 a"b.pdf 时，发出的头是 filename="a%22b.pdf" —— 因为它必须把
+   * `"` 和 `\` 转义掉（否则引号会把参数截断）。以前这里直接取引号里的原文，
+   * 于是这种文件的「原始文件名」在系统里就变成 a%22b.pdf，
+   * 下载下来名字也是 a%22b.pdf，用户看到的是一个满是 % 的文件名。
+   *
+   * filename*=UTF-8''… 是标准的扩展写法，有就优先用它。
+   * 解码失败（名字里本来就有合法的 % 号，比如「进度100%.pdf」）就保持原样 ——
+   * 不能因为解不了码就丢掉文件名。
+   */
+  let filename = (/filename\*=(?:UTF-8|utf-8)''([^;\r\n]+)/.exec(cd) || [])[1]
+    || (/filename="([^"]*)"/.exec(cd) || [])[1];
+  if (filename) {
+    try { filename = decodeURIComponent(filename) } catch { /* 保持原样 */ }
+  }
+  h.filename = filename;
   return h;
 }
 

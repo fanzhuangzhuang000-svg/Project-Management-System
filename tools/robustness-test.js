@@ -191,7 +191,51 @@ const leaks = (text) => LEAK_MARKS.some(m => text.includes(m))
   }
 
   // ───────────────────────────────────────────────
-  console.log('\n [6] 折腾完这一圈，服务还好好的吗');
+  console.log('\n [6] 上传文件名里的转义：既要解，又不能解坏');
+  // ───────────────────────────────────────────────
+  // 浏览器上传 a"b.pdf 时发的头是 filename="a%22b.pdf"（RFC 7578 要求把引号转义）。
+  // 以前服务端直接取引号里的原文，于是系统里的「原始文件名」变成 a%22b.pdf，
+  // 下载下来也是这个名字。
+  // 反过来，「进度100%.pdf」里的 % 是合法字符，解码会失败 —— 那种情况必须保持原样，
+  // 不能为了"解码"把用户的名字搞丢。
+  {
+    const upload = async (filename) => {
+      const b = '----X' + Date.now();
+      const body = Buffer.concat([
+        Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`),
+        Buffer.from('%PDF-1.4 test'),
+        Buffer.from(`\r\n--${b}--\r\n`),
+      ]);
+      const r = await fetch(BASE + '/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'multipart/form-data; boundary=' + b, Cookie: T.cookieHeader() },
+        body,
+      });
+      const j = await r.json().catch(() => ({}));
+      const att = j.attachment || {};
+      if (att.id) {
+        await fetch(BASE + '/api/attachments/' + att.id + '/delete',
+          { method: 'POST', headers: HEAD(), body: '{}' }).catch(() => { });
+      }
+      return { status: r.status, name: att.original_name, error: j.error };
+    };
+
+    const quoted = await upload('a%22b.pdf');
+    check('百分号转义的文件名被还原（a%22b.pdf → a"b.pdf，显示时变成 a_b.pdf）',
+      quoted.status === 200 && quoted.name && !quoted.name.includes('%22'),
+      `${quoted.status} ${quoted.name || quoted.error}`);
+
+    const percent = await upload('进度100%.pdf');
+    check('名字里本来就有 % 的文件不会被解坏', percent.status === 200 && percent.name === '进度100%.pdf',
+      `${percent.status} ${percent.name || percent.error}`);
+
+    const spaces = await upload('%E5%90%88%E5%90%8C%20%E7%94%B2.pdf');
+    check('整段百分号编码的中文名能正确还原', spaces.status === 200 && spaces.name === '合同 甲.pdf',
+      `${spaces.status} ${spaces.name || spaces.error}`);
+  }
+
+  // ───────────────────────────────────────────────
+  console.log('\n [7] 折腾完这一圈，服务还好好的吗');
   // ───────────────────────────────────────────────
   {
     const h = await hit('GET', '/api/health');
