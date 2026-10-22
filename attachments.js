@@ -6,7 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { db, DATA_DIR, nowISO, projectChildTables } = require('./db.js');
+const { db, DATA_DIR, nowISO, projectChildTables, daysAgoISO } = require('./db.js');
 // 多租户：只在 MULTI_TENANT=1 时生效，单机模式下 scope() 返回空串（SQL 一字不改）
 const tenantCtx = require('./tenant.js');
 
@@ -355,7 +355,8 @@ function reattach (ref) {
 /** 清理长期没有归属的暂存附件（用户上传后没保存表单）。
  *  注意：用户主动选择"保留附件"而解除关联的（detached=1）不在此列，绝不自动删。 */
 function purgeOrphans (days = 7) {
-  const cut = new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  // created_at 是本地时间串，比较基准必须同样是本地时间（原因见 db.daysAgoISO）
+  const cut = daysAgoISO(days);
   const rows = db.prepare('SELECT id FROM attachments WHERE record_id IS NULL AND detached = 0 AND created_at < ?').all(cut);
   for (const r of rows) remove(r.id);
   return rows.length;

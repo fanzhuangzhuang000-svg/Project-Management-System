@@ -25,6 +25,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 /**
+ * 本地时间串。
+ * 这里**不能** require('./db.js') —— db.js 是在 init() 里 require 本模块的，
+ * 顶层反向 require 会拿到半成品的 exports。复制这 3 行比冒循环依赖的风险划算。
+ * （库里的时间字段都是本地时间串，写 UTC 会差一个时区，页面上的「升级时间」就不对。）
+ */
+function localTs (d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
  * 迁移清单。**只能往后追加，不能改已经发布过的条目**
  * （改了的话，已经跑过的库不会重跑，新库和老库结构就不一致了）。
  *
@@ -125,7 +136,7 @@ const MIGRATIONS = [
       // 至少要有 1 号租户，否则老库升上来会「无家可归」
       const has1 = db.prepare('SELECT id FROM tenants WHERE id = 1').get();
       if (!has1) {
-        const ts = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        const ts = localTs();
         db.prepare(`INSERT INTO tenants (id, name, status, remark, created_at, updated_at)
                     VALUES (1, '默认租户', '启用', '单机版 / 老数据归属', ?, ?)`).run(ts, ts);
       }
@@ -206,6 +217,36 @@ const MIGRATIONS = [
       // 合同：项目台账按 项目 + 方向 聚合；列表按签订日期
       idx('idx_contracts_project_dir', 'contracts', ['project_id', 'direction']);
       idx('idx_contracts_sign_date', 'contracts', ['sign_date', 'id']);
+    },
+  },
+  {
+    version: 6,
+    name: '清理方向错误的发票挂账',
+    up (db) {
+      // ── 为什么需要这一版 ──
+      // 老版本的发票自动挂账（POST /api/invoices/backfill）在发票侧和收付侧
+      // 各把方向取反了一次，两次抵消，结果变成**同方向**配对：
+      //   收款(in) 被挂到了进项票(in) 上
+      //   付款(out) 被挂到了销项票(out) 上
+      // 语义完全反了，导致发票勾稽（已开票已收 / 已收未开票）整块数字失真，
+      // 而且整个过程不报错，用户只会觉得「对不上账」。
+      //
+      // 代码已修（现在收款只配销项票）。这一版负责把历史错挂的账解开，
+      // 让它们回到「未关联」状态，用户可以重新点一次自动挂账 —— 这次会挂对。
+      // 只解方向相同的配对，本来就没挂的、方向本来就对的一律不动。
+      const hasPay = db.dialect === 'postgres'
+        ? !!db.prepare("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'payments'").get()
+        : !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payments'").get();
+      const hasInv = db.dialect === 'postgres'
+        ? !!db.prepare("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'invoices'").get()
+        : !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='invoices'").get();
+      if (!hasPay || !hasInv) return;
+
+      const ids = db.prepare(`SELECT p.id FROM payments p JOIN invoices i ON i.id = p.invoice_id
+        WHERE p.direction = i.direction`).all().map(r => r.id);
+      if (!ids.length) return;
+      const stmt = db.prepare('UPDATE payments SET invoice_id = NULL WHERE id = ?');
+      for (const id of ids) stmt.run(id);
     },
   },
 ];
@@ -310,7 +351,7 @@ function migrate (db, opts = {}) {
 
   const ran = [];
   ensureTable(db);
-  const ts = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
+  const ts = () => localTs();
 
   for (const m of pending) {
     try {

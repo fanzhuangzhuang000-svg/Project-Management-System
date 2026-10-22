@@ -4,7 +4,7 @@
  * 目前没有登录体系，操作人由前端在「系统设置」里填一次名字（存本机），
  * 通过 X-Operator 请求头带上来；没填就记 IP。
  */
-const { db, nowISO } = require('./db.js');
+const { db, nowISO, daysAgoISO } = require('./db.js');
 const { TABLES } = require('./schema.js');
 
 const ACTION_LABEL = {
@@ -117,7 +117,7 @@ function stats () {
 function purge (days = 365) {
   const d = Number(days);
   if (!Number.isFinite(d) || d <= 0) return 0;   // 0 / 负数 / 非法值 = 永久保留
-  const cut = new Date(Date.now() - d * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  const cut = daysAgoISO(d);   // at 字段是本地时间串，不能用 UTC 比
   return Number(db.prepare('DELETE FROM logs WHERE at < ?').run(cut).changes);
 }
 

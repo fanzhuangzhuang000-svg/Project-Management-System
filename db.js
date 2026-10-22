@@ -169,11 +169,19 @@ function saveSettings (patch) {
 }
 
 // ---------------- 工具 ----------------
-const nowISO = () => {
-  const d = new Date();
+/** 本地时间串（与库里所有时间字段同格式，可直接做字符串比较） */
+const fmtLocal = d => {
   const p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 };
+const nowISO = () => fmtLocal(new Date());
+/**
+ * n 天前的本地时间串，用来跟库里的时间字段比大小。
+ * ⚠️ 必须走本地时间：库里的 created_at / deleted_at 全是 nowISO() 写的**本地**时间串，
+ * 而 `new Date(...).toISOString()` 给的是 UTC。北京时间下两者差 8 小时 ——
+ * 回收站「保留 30 天」实际保留了 30 天零 8 小时，往西的时区则会提前删。
+ */
+const daysAgoISO = days => fmtLocal(new Date(Date.now() - num(days || 0) * 86400000));
 const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const round2 = v => Math.round((num(v) + Number.EPSILON) * 100) / 100;
 const today = () => new Date().toLocaleDateString('sv-SE');   // YYYY-MM-DD，本地时区
@@ -837,7 +845,9 @@ function backfillInvoiceLinks () {
   const idx = (withContract) => {
     const m = new Map();
     for (const i of invs) {
-      const want = i.direction === 'out' ? 'in' : 'out';         // 销项票由收款冲抵
+      // key 里放的语义是「这张票能被哪个方向的收付款冲抵」：
+      // 销项票(out) 由收款(in) 冲抵，进项票(in) 由付款(out) 冲抵。
+      const want = i.direction === 'out' ? 'in' : 'out';
       const k = `${i.project_id}|${want}|${withContract ? (i.contract_id || '') : ''}`;
       if (!m.has(k)) m.set(k, []);
       m.get(k).push(i);
@@ -850,17 +860,33 @@ function backfillInvoiceLinks () {
   const t = nowISO();
   const stmt = db.prepare('UPDATE payments SET invoice_id = ?, updated_at = ? WHERE id = ?');
   let linked = 0, skipped = 0, amount = 0;
-  for (const p of pays) {
-    const want = p.direction === 'in' ? 'out' : 'in';
-    const cands = (p.contract_id ? exact.get(`${p.project_id}|${want}|${p.contract_id}`) : null)
-      || loose.get(`${p.project_id}|${want}|`) || [];
-    // 只有"这张票还差的钱 ≥ 这笔款"才挂，避免一张票被挂进超额收款
-    const need = num(p.amount);
-    const target = cands.find(i => (room.get(i.id) || 0) + 0.005 >= need && need > 0);
-    if (!target) { skipped++; continue; }
-    stmt.run(target.id, t, p.id);
-    room.set(target.id, round2((room.get(target.id) || 0) - need));
-    linked++; amount = round2(amount + need);
+  // 整批一次事务：中途抛错（磁盘满 / 库被锁）不能留半挂账 ——
+  // 否则接口报「失败」，可账已经挂了一半，用户重试又是另一批结果。
+  db.exec('BEGIN');
+  try {
+    for (const p of pays) {
+      // ⚠️ 这里**不能**再取反一次。
+      // 发票侧的 key 存的是「能被哪个方向的收付款冲抵」，直接拿本条的方向去查即可：
+      //   收款(in) → 命中 key 里的 'in' → 销项票(out)，对
+      //   付款(out) → 命中 key 里的 'out' → 进项票(in)，对
+      // 曾经这里写成 `p.direction === 'in' ? 'out' : 'in'`，跟发票侧各取反一次，
+      // 两次取反抵消，结果变成**同方向**配对：收款挂到进项票、付款挂到销项票上，
+      // 勾稽数字全废，而且不报错。
+      const want = p.direction;
+      const cands = (p.contract_id ? exact.get(`${p.project_id}|${want}|${p.contract_id}`) : null)
+        || loose.get(`${p.project_id}|${want}|`) || [];
+      // 只有"这张票还差的钱 ≥ 这笔款"才挂，避免一张票被挂进超额收款
+      const need = num(p.amount);
+      const target = cands.find(i => (room.get(i.id) || 0) + 0.005 >= need && need > 0);
+      if (!target) { skipped++; continue; }
+      stmt.run(target.id, t, p.id);
+      room.set(target.id, round2((room.get(target.id) || 0) - need));
+      linked++; amount = round2(amount + need);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
   }
   return { linked, skipped, amount, scanned: pays.length, invoices: invs.length };
 }
@@ -1430,21 +1456,30 @@ function extraStats (t, thisMonth) {
 }
 
 /** 项目回款率排行 Top5（回款率 = 已收款 / 收入合同额，只统计有合同额的项目） */
+/**
+ * 回款率 Top5。
+ *
+ * ⚠️ 这里必须复用 projectStatsMany 的统计，不要自己再写一套 SQL。
+ * 曾经这里是一条独立的聚合：
+ *   `SELECT project_id, SUM(amount) AS paid_in FROM payments GROUP BY project_id`
+ * 两个问题：
+ *   1) 没有 `WHERE direction='in'` —— 把「付款」也加进了「已收款」。
+ *      一个项目收 100 万、付 80 万，排行榜显示回款率 180%（还被封顶成 100%），
+ *      而项目台账里的回款率是 100 万/合同额。同一份数据两个页面两个数。
+ *   2) 合同额没算已确认的合同变更，跟台账口径又差一截。
+ * 现在统一从 projectStatsMany 取，口径永远一致。
+ */
 function collectRank () {
-  const rows = db.prepare(`SELECT p.id, p.name,
-      COALESCE(s.contract_in,0) AS contract_in, COALESCE(pay.paid_in,0) AS paid_in
-    FROM projects p
-    LEFT JOIN (
-      SELECT project_id, SUM(amount) AS contract_in FROM contracts WHERE direction='in' GROUP BY project_id
-    ) s ON s.project_id = p.id
-    LEFT JOIN (
-      SELECT project_id, SUM(amount) AS paid_in FROM payments GROUP BY project_id
-    ) pay ON pay.project_id = p.id
-  `).all();
+  const rows = db.prepare('SELECT id, name FROM projects').all();
+  if (!rows.length) return [];
+  const statMap = projectStatsMany(rows.map(r => r.id));
   return rows
+    .map(r => {
+      const s = statMap[r.id] || {};
+      return { id: r.id, name: r.name, rate: round2(num(s.collect_rate)), contract_in: num(s.contract_in), paid_in: num(s.paid_in) };
+    })
     .filter(r => r.contract_in > 0)
-    .map(r => ({ id: r.id, name: r.name, rate: Math.min(100, Math.round(r.paid_in / r.contract_in * 1000) / 10) }))
-    .sort((a, b) => b.rate - a.rate)
+    .sort((a, b) => b.rate - a.rate || b.paid_in - a.paid_in)
     .slice(0, 5);
 }
 /** 按账号权限过滤总览数据：看不到的模块，对应数字直接不给 */
@@ -1463,7 +1498,12 @@ function dashboardFor (perms) {
   }
   // 收付款：没有读权，资金流/回款/应收应付全不给
   if (!can('payments')) {
-    for (const k of ['paid_in', 'paid_out', 'receivable', 'payable', 'payable_contract', 'collect_rate', 'month_in', 'month_out']) d.totals[k] = null;
+    for (const k of ['paid_in', 'paid_out', 'receivable', 'payable', 'payable_contract', 'collect_rate']) d.totals[k] = null;
+    // ⚠️ month_in / month_out 是**顶层**字段，不在 totals 里。
+    // 原来把它们写进 d.totals[k] 等于什么都没做 —— 没有收付款读权限的账号
+    // 照样能在首页看到「本月已回款 X 万」，金额直接泄漏。
+    d.month_in = null;
+    d.month_out = null;
     d.monthly = [];
   }
   // 收付款计划：计划、账龄、逾期清单
@@ -1754,11 +1794,21 @@ function seed (force) {
 }
 
 // ---------------- 收付款计划：按合同付款条款自动生成 ----------------
+/**
+ * 加 N 个月，返回 YYYY-MM-DD。
+ * ⚠️ 不能直接 setMonth：JS 的 setMonth 在目标月没有这一天时**往后溢出**。
+ * 2024-02-29 加 12 个月，setMonth 得到 2025-03-01（2 月没有 29 号，溢出到 3 月 1 日），
+ * 而付款计划应该是 2025-02-28。先把日改成 1、加完月再夹回当月最后一天。
+ */
 function addMonths (dateStr, months) {
   if (!dateStr) return null;
   const d = new Date(dateStr + 'T00:00:00');
   if (isNaN(d)) return dateStr;
+  const day = d.getDate();
+  d.setDate(1);
   d.setMonth(d.getMonth() + months);
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(day, lastDay));
   return d.toLocaleDateString('sv-SE');
 }
 
@@ -1950,7 +2000,7 @@ module.exports = {
   decorateInvoices, decorateContracts, invoiceReconcile, invoicePaidMap, backfillInvoiceLinks, changeMap,
   scheduleAllocation, decorateSchedules, scheduleStats, generatePlan, sweepOrphans, recordCounts,
   projectChildTables,
-  num, round2, nowISO, today,
+  num, round2, nowISO, today, daysAgoISO, fmtLocal,
   getSettings, saveSettings, DEFAULT_SETTINGS, SETTING_KEYS,
 };
 

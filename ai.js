@@ -1784,7 +1784,7 @@ function proposeWrite (name, args, perms, opts = {}) {
  * @param {object} [patch] 用户在确认卡片上补/改的字段（比如选了个所属项目）。
  *   只认这张表真实存在的普通列 —— 不能让前端借 patch 塞进虚拟列或别的表的字段。
  */
-function applyProposal (token, perms, patch) {
+function applyProposal (token, perms, patch, userId) {
   const p = getProposal(token);
   if (!p) return { error: '这份方案已经过期或不存在了，请重新让 AI 生成一次' };
   if (!auth.canWrite(perms, p.table)) return { error: `没有录入「${p.tableLabel}」的权限` };
@@ -1821,7 +1821,10 @@ function applyProposal (token, perms, patch) {
   let linkError = null;
   if (p.attachIds && p.attachIds.length) {
     try {
-      linked = require('./attachments.js').linkIds(p.attachIds, p.table, r.id);
+      // 归属校验要带上「谁在确认」：暂存附件只允许上传人自己挂，管理员例外。
+      // 漏传 userId 时 uploaded_by 比对恒为假，附件一份也挂不上（实测挂 0 份）。
+      linked = require('./attachments.js').linkIds(p.attachIds, p.table, r.id,
+        { isAdmin: !!(perms && perms.all), userId });
     } catch (e) { linkError = e.message; }
   }
 

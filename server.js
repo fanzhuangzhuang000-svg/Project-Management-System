@@ -748,6 +748,10 @@ async function handleApi (req, res, url) {
       dataDir: dbf.DATA_DIR,
       port: PORT,
       lan: lanAddresses(),
+      // 权限项清单要跟着 meta 一起下发：账号编辑页按它渲染权限勾选框。
+      // 以前没给，前端只能 `(meta as any).sysKeys` 猜，猜不到就退回一张写死的文案表 ——
+      // 后端新增一个权限项时，前端那张表不会自动跟上，界面会显示成原始 key。
+      sysKeys: auth.SYS_KEYS,
       trashKeepDays: trash.KEEP_DAYS,
       upload: {
         maxMB: Math.round(MAX_UPLOAD / 1024 / 1024),
@@ -1005,7 +1009,7 @@ async function handleApi (req, res, url) {
       const token = String(body.token || '');
       if (!token) return sendJSON(res, 400, { error: '缺少方案凭证' });
       // patch：用户在确认卡片上补充/修改的字段（比如选了个所属项目）
-      const r = ai.applyProposal(token, req.user.perms, body.patch);
+      const r = ai.applyProposal(token, req.user.perms, body.patch, req.user.id);
       if (r.error) return sendJSON(res, r.error.includes('权限') ? 403 : 400, r);
       writeLog(req, 'create', r.table, r.id, recordLabel(r.table, r.row), 'AI 助手录入（人工确认）');
       return sendJSON(res, 200, r);

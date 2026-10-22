@@ -119,7 +119,8 @@ function create ({ name, contact, phone, expiry, adminUser, adminPassword } = {}
   const nm = String(name || '').trim();
   if (!nm) return { error: '租户名称不能为空' };
 
-  const ts = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  // 时间戳用本地时间：同库的其它时间字段都是本地时间串，混着 UTC 会差一个时区
+  const ts = dbf().nowISO();
   let id;
   db.exec('BEGIN');
   try {
@@ -167,7 +168,8 @@ function update (id, patch = {}) {
   const db = dbf().db;
   const cur = get(id);
   if (!cur) return { error: '租户不存在' };
-  const ts = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  // 时间戳用本地时间：同库的其它时间字段都是本地时间串，混着 UTC 会差一个时区
+  const ts = dbf().nowISO();
   const fields = [];
   const vals = [];
   for (const k of ['name', 'contact', 'phone', 'expiry', 'status', 'remark']) {

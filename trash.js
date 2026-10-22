@@ -6,7 +6,7 @@
  * 而是删除前把「本次会被删掉的全部行」序列化成 JSON 存进 trash 表。
  * 好处是业务查询零改动、还原时原样写回（保留原 id，外键关系不断）。
  */
-const { db, nowISO } = require('./db.js');
+const { db, nowISO, daysAgoISO } = require('./db.js');
 // 多租户：只在 MULTI_TENANT=1 时生效，单机模式下 scope() 返回空串（SQL 一字不改）
 const tenantCtx = require('./tenant.js');
 
@@ -191,7 +191,9 @@ function purgeAll () {
 
 /** 超过保留期的自动清理 */
 function autoPurge (days = KEEP_DAYS) {
-  const cut = new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  // ⚠️ 必须用本地时间串：deleted_at 是 nowISO() 写的本地时间。
+  // 用 toISOString() 会差一个时区偏移（北京 8 小时），保留 30 天变 30 天零 8 小时。
+  const cut = daysAgoISO(days);
   const old = db.prepare('SELECT id FROM trash WHERE deleted_at < ?').all(cut);
   let files = 0;
   for (const r of old) { const res = purge(r.id); files += res.removedFiles || 0; }

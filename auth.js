@@ -10,7 +10,7 @@
  *    管理员用 { all:true } 直接放行
  */
 const crypto = require('node:crypto');
-const { db, nowISO } = require('./db.js');
+const { db, nowISO, fmtLocal } = require('./db.js');
 
 const COOKIE = 'pms_session';
 const SESSION_DAYS = 30;
@@ -211,7 +211,12 @@ function createSession (user, req) {
   const token = crypto.randomBytes(32).toString('hex');
   const now = new Date();
   const exp = new Date(now.getTime() + SESSION_DAYS * 86400000);
-  const iso = d => d.toISOString().slice(0, 19).replace('T', ' ');
+  /**
+   * ⚠️ 有效期必须写**本地**时间串。
+   * expires_at 后面是拿 nowISO()（本地时间）比大小的，写 UTC 串等于偏了一个时区：
+   * 北京时区下 30 天的会话会提前 8 小时失效，UTC 以西的时区反过来会白白延长几小时。
+   */
+  const iso = d => fmtLocal(d);
   db.prepare(`INSERT INTO sessions (token, user_id, created_at, expires_at, last_seen, ip, agent)
     VALUES (?,?,?,?,?,?,?)`).run(
     token, user.id, nowISO(), iso(exp), nowISO(),
@@ -276,7 +281,7 @@ function fromRequest (req) {
   const now = Date.now();
   const last = renewedAt.get(token) || 0;
   if (now - last > RENEW_EVERY_MS) {
-    const exp = new Date(now + SESSION_DAYS * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+    const exp = fmtLocal(new Date(now + SESSION_DAYS * 86400000));
     db.prepare('UPDATE sessions SET last_seen = ?, expires_at = ? WHERE token = ?').run(nowISO(), exp, token);
     renewedAt.set(token, now);
   }
