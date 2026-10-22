@@ -100,6 +100,79 @@ function listenHost () {
 const PORT = parseInt(argVal('port', process.env.PMS_PORT || process.env.PMS_LISTEN_PORT || process.env.PORT || '8787'), 10);
 const HOST = listenHost();
 
+// ---------------- 多进程（cluster） ----------------
+//
+// 为什么需要：node:sqlite 是同步 API，单进程下 30 个人同时用，
+// 所有请求排队串行（压测实测 30 并发吞吐卡在 7 r/s，P95 5.3 秒）。
+// cluster 让 N 个 worker 各自打开同一个库文件，读请求真正并行 ——
+// SQLite WAL 模式支持多读单写（busy_timeout=8000 兜底写冲突），
+// 这是「先提并发、PG 后置」路线里的关键一步。
+//
+// 怎么用：环境变量 PMS_WORKERS=N（N>1 才启用；不设 = 单进程，行为一字不变）。
+//
+// 三条纪律（哪条破了都会出事）：
+//   1) 迁移/建表/seed 只能跑一份 —— 主进程先只拉起「维护角色」worker，
+//      它完成初始化后发 boot-ok，主进程再拉起其余 worker。
+//      否则老库升级时两个 worker 并发 ALTER TABLE，必挂一个。
+//   2) 备份/快照/清理/OCR 续跑/checkpoint 这类全局任务只跑一份 ——
+//      全部挂「维护角色」（PMS_ROLE=maint，重启后角色不漂移）。
+//   3) 看板缓存的失效必须跨进程广播 —— 用户要求「看板必须实时」，
+//      不能靠 20 秒 TTL 兜底：A worker 写入后，B worker 的缓存里
+//      还是旧账， TTL 到期前所有人都看到旧数。写操作 → IPC → 主进程
+//      → 广播所有 worker，往返约 1ms。
+const cluster = require('node:cluster');
+const CLUSTER_WORKERS = (() => {
+  const n = Number(process.env.PMS_WORKERS);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 0;
+})();
+const IS_CLUSTER = CLUSTER_WORKERS > 1;
+const IS_PRIMARY = IS_CLUSTER && cluster.isPrimary;
+const IS_WORKER = IS_CLUSTER && cluster.isWorker;
+// 维护角色：单进程恒 true；集群里只有 PMS_ROLE=maint 的 worker 为 true。
+const IS_MAINT_ROLE = !IS_WORKER || process.env.PMS_ROLE === 'maint';
+
+if (IS_PRIMARY) {
+  // ---- 主进程：不 require 业务库，只负责 fork 与消息中继 ----
+  // 角色固定在「槽位」上：第 0 个槽位永远是 maint。worker 崩了重启时
+  // 沿用槽位角色 —— 用 cluster.worker.id 判断会漂移（id 只增不减）。
+  const slotRoles = [];
+  function forkSlot (i) {
+    if (!slotRoles[i]) slotRoles[i] = i === 0 ? 'maint' : 'worker';
+    const w = cluster.fork({ ...process.env, PMS_ROLE: slotRoles[i] });
+    w.__slot = i;
+    return w;
+  }
+  let booted = 0;
+  cluster.on('message', (worker, msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'dash-invalidate') {
+      // 任一 worker 的写操作 → 其余 worker 的看板缓存全部失效
+      for (const w of Object.values(cluster.workers)) {
+        if (w && w.id !== worker.id) { try { w.send({ type: 'dash-invalidate' }); } catch { /* 已退出 */ } }
+      }
+      return;
+    }
+    if (msg.type === 'boot-ok') {
+      booted++;
+      if (booted === 1) {
+        // 初始化完成（迁移/建表/seed 都落库了），其余 worker 现在拉起才安全
+        console.log(`  [集群] 初始化完成，再拉起 ${CLUSTER_WORKERS - 1} 个 worker`);
+        for (let i = 1; i < CLUSTER_WORKERS; i++) forkSlot(i);
+      }
+    }
+  });
+  cluster.on('exit', (worker, code, signal) => {
+    const i = worker.__slot || 0;
+    console.log(`  [集群] worker#${worker.id}（${slotRoles[i]}）退出（code=${code}${signal ? ' signal=' + signal : ''}），重启中…`);
+    forkSlot(i);
+  });
+  console.log(`  [集群] 主进程启动：${CLUSTER_WORKERS} 个 worker，先拉起维护角色完成初始化`);
+  forkSlot(0);
+  // 顶层 return（CommonJS 模块包装函数内合法）：主进程到此为止，
+  // 绝不执行下面的业务初始化 —— 否则主进程也会开一个库连接。
+  return;
+}
+
 // ---------------- 工具 ----------------
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -165,7 +238,21 @@ function dashSet (key, json) {
   if (dashCache.size > 64) dashCache.clear();
   dashCache.set(key, { at: Date.now(), json });
 }
-function dashClear () { dashCache.clear(); }
+function dashClear (origin) {
+  dashCache.clear();
+  // 集群：写操作发生在任一 worker，其余 worker 的缓存也必须立刻失效。
+  // 用户要求「看板必须实时」—— 靠 20 秒 TTL 兜底会在 TTL 窗口内让
+  // 另一个 worker 上的同事看到旧账。origin='remote' 是收到广播后的本地清理，
+  // 不再回发，防递归。主进程只中继、自己没有缓存。
+  if (IS_WORKER && origin !== 'remote' && process.connected) {
+    try { process.send({ type: 'dash-invalidate' }); } catch { /* 主进程不在了，本地清完即可 */ }
+  }
+}
+if (IS_WORKER) {
+  process.on('message', m => {
+    if (m && m.type === 'dash-invalidate') dashClear('remote');
+  });
+}
 
 /** 直接发一段已经序列化好的 JSON（缓存命中时用，省一次 stringify） */
 function sendRawJSON (res, code, json, extraHeaders) {
@@ -2173,6 +2260,12 @@ const server = http.createServer((req, res) => {
 
 const seedResult = dbf.init();
 
+// 集群握手：迁移/建表/seed 已在本进程落库，主进程收到后才拉起其余 worker。
+// worker 2..N 启动时 init 的迁移检查会读到最新版本直接跳过，不再有并发 ALTER。
+if (IS_WORKER && process.connected) {
+  try { process.send({ type: 'boot-ok' }); } catch { /* 主进程不在了 */ }
+}
+
 attach.ensureDir();
 attach.createTable();
 trash.createTable();
@@ -2265,7 +2358,9 @@ if (!seedResult.existed) {
 //    一台连续开一个月的机器上：回收站永远不清理（「保留 30 天」形同虚设，附件文件一起堆着）、
 //    自动备份只有装完那天的一份、暂存附件与过期会话一直不回收、月度快照缺月。
 const maintenance = require('./maintenance.js');
-const dailyBoot = maintenance.runDaily();
+// 集群下这些「全库只跑一份」的任务（每日备份 / 月度快照 / 超期清理 / 断点续跑）全挂维护角色，
+// 否则 N 个 worker 各跑一遍：备份文件翻 N 倍、OCR 同一附件识别 N 次。
+const dailyBoot = IS_MAINT_ROLE ? maintenance.runDaily() : { errors: [] };
 const sessionsPurged = dailyBoot.sessions;
 const purged = dailyBoot.orphans;
 const trashPurged = dailyBoot.trash;
@@ -2281,6 +2376,7 @@ const MAINTENANCE_INTERVAL_MS = Number(process.env.PMS_MAINTENANCE_INTERVAL_MS) 
   ? Number(process.env.PMS_MAINTENANCE_INTERVAL_MS)
   : 60 * 60 * 1000;
 setInterval(() => {
+  if (!IS_MAINT_ROLE) return;
   try {
     const r = maintenance.runDaily();
     if (r.backup && r.backup.ok) console.log('[维护] 已自动备份：' + (r.backup.file || r.backup.name || ''));
@@ -2293,15 +2389,23 @@ setInterval(() => {
   }
 }, MAINTENANCE_INTERVAL_MS).unref();
 
-// 断点续跑：上次没跑完的识别任务重新入队
-for (const r of attach.list({ status: 'pending' }).rows) queueOcr(r.id);
-for (const r of attach.list({ status: 'running' }).rows) queueOcr(r.id);
+// 断点续跑：上次没跑完的识别任务重新入队（OCR 队列是进程内存，集群下只挂维护角色，
+// 否则同一个附件被 N 个 worker 各识别一遍）
+if (IS_MAINT_ROLE) {
+  for (const r of attach.list({ status: 'pending' }).rows) queueOcr(r.id);
+  for (const r of attach.list({ status: 'running' }).rows) queueOcr(r.id);
+}
 
 server.listen(PORT, HOST, () => {
+  if (!IS_MAINT_ROLE) {
+    // 集群里的普通 worker：一行就够，全横幅只由维护角色打一遍
+    console.log(`  [集群] worker#${cluster.worker.id}（${process.env.PMS_ROLE}）已就绪 → 端口 ${PORT}`);
+    return;
+  }
   const ips = lanAddresses();
   const line = '='.repeat(58);
   console.log(line);
-  console.log('  ' + APP_NAME + '  v' + VERSION);
+  console.log('  ' + APP_NAME + '  v' + VERSION + (IS_CLUSTER ? `  （${CLUSTER_WORKERS} 进程集群）` : ''));
   console.log(line);
   console.log('  本机访问:   http://127.0.0.1:' + PORT);
   for (const ip of ips) console.log('  同事访问:   http://' + ip + ':' + PORT + '   (同一局域网)');
@@ -2368,7 +2472,7 @@ console.log('  写入模式:   ' + (dbf.dialect === 'postgres'
 });
 
 // 每 15 分钟做一次 PASSIVE checkpoint，避免 WAL 一直增长（不影响读写）
-setInterval(() => { dbf.checkpoint('PASSIVE'); }, 15 * 60 * 1000).unref();
+if (IS_MAINT_ROLE) setInterval(() => { dbf.checkpoint('PASSIVE'); }, 15 * 60 * 1000).unref();   // WAL checkpoint 是库级操作，全集群一份就够
 
 server.on('error', async e => {
   if (e.code !== 'EADDRINUSE') {
@@ -2436,8 +2540,9 @@ process.on('uncaughtException', e => {
 /* ---------------- 后台定时任务 ---------------- */
 
 // 每日经营简报推送：每 10 分钟看一次到点没有（靠 lastSent 保证一天只发一次）
+// 集群下只挂维护角色 —— 简报一天只该发一份，N 个 worker 各推一遍用户会收到 N 条。
 let pushBusy = false;
-setInterval(async () => {
+if (IS_MAINT_ROLE) setInterval(async () => {
   if (pushBusy) return;                     // 上次还没跑完就跳过
   pushBusy = true;
   try {
@@ -2454,32 +2559,31 @@ setInterval(async () => {
   }
 }, 10 * 60 * 1000).unref?.();
 
-// 简报缓存清理：每天清一次超过 60 天的
-setInterval(() => {
+// 简报缓存清理：每天清一次超过 60 天的（全集群一份）
+if (IS_MAINT_ROLE) setInterval(() => {
   try { ai.pruneBriefings(60) } catch { /* 忽略 */ }
 }, 24 * 60 * 60 * 1000).unref?.();
 
 // 启动后 30 秒先看一眼（服务刚起来时如果已经过了推送时间，当天补推）
-setTimeout(async () => {
+if (IS_MAINT_ROLE) setTimeout(async () => {
   try { await ai.maybePushDaily() } catch { /* 忽略 */ }
 }, 30000).unref?.();
 
-// ---------------- 多租户实验性警告 ----------------
-// 隔离只覆盖了核心读写路径，统计/附件/日志/回收站/各模块 SQL 都还没有。
-// 这种情况下打开多租户，不同租户之间反而会互相看到数据 —— 比不开更糟。
-// 所以启动时必须**主动、显眼**地警告，不能只写在 .env 注释里等人去翻。
-if (require('./tenant.js').isMultiTenant()) {
+// ---------------- 多租户提示 ----------------
+// 早期隔离只覆盖了行级读写，看板/日志/快照全在裸奔 —— 那时这里是一整块
+// 「请勿用于生产」的红色警告。第八轮已把审计扫出的 54 处聚合路径漏点全部
+// 收口（tools/tenant-audit.js 现在是 0 漏点，接入 CI 防回退），并新增
+// tools/tenant-cross-test.js（30 项串租户攻击 + 上下文串号回归）。
+// 所以这里降级为「新特性提示」：功能是新的，建议先小范围试点再全面铺开。
+if (tenantCtx.isMultiTenant()) {
   console.log('');
-  console.log('  ' + '!'.repeat(62));
-  console.log('  !! 警告：MULTI_TENANT=1 是【实验性】功能，请勿用于生产 !!');
-  console.log('  !!');
-  console.log('  !! 隔离目前只覆盖：列表 / 单条读取 / 新增 / 修改 / 删除');
-  console.log('  !! 尚未隔离：首页统计、附件、操作日志、回收站、快照、');
-  console.log('  !!           对账单、账龄、批量导入导出');
-  console.log('  !!');
-  console.log('  !! 在补齐之前，不同租户之间会互相看到数据 —— 比不开多租户更危险。');
-  console.log('  !! 私有化部署请把 MULTI_TENANT 去掉或设为 0。');
-  console.log('  ' + '!'.repeat(62));
+  console.log('  ┌────────────────────────────────────────────────────┐');
+  console.log('  │  多租户模式已开启（MULTI_TENANT=1）                │');
+  console.log('  │  隔离范围：列表 / 读写删 / 看板聚合 / 勾稽 / 日志 /  │');
+  console.log('  │            快照 / 附件 / 回收站（审计 0 漏点）      │');
+  console.log('  │  建议：正式启用前，先用第二个租户账号在测试库       │');
+  console.log('  │  走一遍业务流程，确认口径符合预期。                 │');
+  console.log('  └────────────────────────────────────────────────────┘');
   console.log('');
 }
 // ---------------- 操作日志保留期清理 ----------------
@@ -2504,5 +2608,8 @@ function sweepLogs () {
     console.log('[日志] 清理失败：' + e.message);
   }
 }
-setTimeout(sweepLogs, 60 * 1000).unref?.();
-setInterval(sweepLogs, 24 * 60 * 60 * 1000).unref?.();
+// 集群下日志清理也只挂维护角色（按保留期删，跑多遍无害但白浪费）
+if (IS_MAINT_ROLE) {
+  setTimeout(sweepLogs, 60 * 1000).unref?.();
+  setInterval(sweepLogs, 24 * 60 * 60 * 1000).unref?.();
+}

@@ -188,6 +188,9 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 交叉访问：聚合路径（看板/勾稽/详情/日志/快照）+ ALS 串号回归。
     // tenant-test 验「行级 CRUD」，这份验「多行聚合不混算」—— 两份都要跑。
     ['多租户交叉访问', 'tenant-cross-test.js'],
+    // 多进程：跨 worker 缓存实时失效 + WAL 多进程写 + 单进程回归。
+    // 起真实服务（2 worker / 单进程各一次），时间比普通套件长一点。
+    ['多进程集群', 'cluster-test.js'],
     ['专业版集成', 'verify-pro-edition.js'],
     ['AI 助手', 'ai-test.js'], ['React 界面', 'ui-react-test.js'],
     // 纯静态检查：health 被当成结果对象用，会让启动警告恒亮、

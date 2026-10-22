@@ -47,6 +47,9 @@ async function startServer () {
     PMS_NO_AUTO_BACKUP: '1',
     PMS_MAINTENANCE_INTERVAL_MS: '0',
   };
+  // 多进程对照：PMS_WORKERS=4 node tools/load-test.js --dir ...
+  const w = Number(argOf('--workers', '0'));
+  if (w > 1) env.PMS_WORKERS = String(w);
   const srv = spawn(process.execPath, ['--no-warnings', 'server.js'], {
     cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'],
   });
