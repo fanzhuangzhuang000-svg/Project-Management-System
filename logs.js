@@ -5,6 +5,7 @@
  * 通过 X-Operator 请求头带上来；没填就记 IP。
  */
 const { db, nowISO, daysAgoISO } = require('./db.js');
+const tenantCtx = require('./tenant.js');
 const { TABLES } = require('./schema.js');
 
 const ACTION_LABEL = {
@@ -39,8 +40,10 @@ function log (entry) {
     // "Value is too large to be represented as a JavaScript number" ——
     // 一条日志就能让整个日志页 / 系统通知永久 500。
     const rid = Number(entry.record_id);
-    db.prepare(`INSERT INTO logs (at, operator, action, table_name, record_id, label, summary, detail)
-      VALUES (?,?,?,?,?,?,?,?)`).run(
+    // 多租户：写入时打上当前租户标。漏了的话租户 2 的操作日志全归租户 1 ——
+    // 租户 2 查不到自己的操作，租户 1 却能看到别人的，两头都错。
+    db.prepare(`INSERT INTO logs (at, operator, action, table_name, record_id, label, summary, detail, tenant_id)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(
       nowISO(),
       entry.operator || null,
       entry.action || 'other',
@@ -49,6 +52,7 @@ function log (entry) {
       entry.label || null,
       entry.summary || null,
       entry.detail ? JSON.stringify(entry.detail).slice(0, 4000) : null,
+      tenantCtx.stampTenant(),
     );
   } catch { /* 忽略 */ }
 }
@@ -88,6 +92,9 @@ function fmt (v) {
 function list (opts = {}) {
   const where = [];
   const params = [];
+  // 多租户：日志按租户隔离（单机模式 scope 返回空串，SQL 不变）
+  const tenantScope = tenantCtx.scope('');
+  if (tenantScope) where.push(tenantScope);
   if (opts.table_name) { where.push('table_name = ?'); params.push(opts.table_name); }
   if (opts.action) { where.push('action = ?'); params.push(opts.action); }
   if (opts.operator) { where.push('operator = ?'); params.push(opts.operator); }

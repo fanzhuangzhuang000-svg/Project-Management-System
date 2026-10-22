@@ -185,6 +185,9 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     //    dist-installer 里改动前的旧包，第 5 步才重新打。现已挪到第 6 步，
     //    紧跟在打包之后 —— 那条断言本来就是为这种时序错位写的，结果它先抓到了自己。
     ['多租户隔离', 'tenant-test.js'],
+    // 交叉访问：聚合路径（看板/勾稽/详情/日志/快照）+ ALS 串号回归。
+    // tenant-test 验「行级 CRUD」，这份验「多行聚合不混算」—— 两份都要跑。
+    ['多租户交叉访问', 'tenant-cross-test.js'],
     ['专业版集成', 'verify-pro-edition.js'],
     ['AI 助手', 'ai-test.js'], ['React 界面', 'ui-react-test.js'],
     // 纯静态检查：health 被当成结果对象用，会让启动警告恒亮、

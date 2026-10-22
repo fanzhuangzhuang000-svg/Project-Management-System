@@ -10,21 +10,68 @@
  * 也至少留个锚点，界面上会写清楚是哪天记的。
  */
 const { db, dashboard, nowISO, today, round2, num } = require('./db.js');
+const tenantCtx = require('./tenant.js');
 
 const KEEP_MONTHS = 60;          // 最多留 5 年
+// 孤儿/容量清理类语句的豁免标记：跨租户全局执行是有意的（见 db.js sweepOrphans）
+const GLOBAL = '/* tenant-global */';
+
+// 租户条件：scope() 返回裸条件（不带 WHERE），这里统一补前缀。
+// 已有 WHERE 的语句用 snapTenantAnd()，没有的用 snapTenantWhere()。
+// 单机模式两者都返回 ''，SQL 逐字不变。
+const snapCond = () => tenantCtx.scope();
+const snapTenantAnd = () => { const c = snapCond(); return c ? ' AND ' + c : ''; };
+const snapTenantWhere = () => { const c = snapCond(); return c ? ' WHERE ' + c : ''; };
 
 const safeParse = (s, dflt) => { try { return JSON.parse(s); } catch { return dflt; } };
 
 function createTable () {
   db.exec(`CREATE TABLE IF NOT EXISTS snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ym TEXT NOT NULL UNIQUE,
+    ym TEXT NOT NULL,
+    tenant_id BIGINT DEFAULT 1,
     kind TEXT DEFAULT 'manual',
     note TEXT,
     data TEXT,
     captured_at TEXT
   );`);
-  db.exec('CREATE INDEX IF NOT EXISTS idx_snapshots_ym ON snapshots(ym);');
+  // ── 老库升级：原来 ym 是列级 UNIQUE ──
+  // 多租户下两个租户给同一个月结账，ON CONFLICT(ym) 会让租户 B 覆盖租户 A 的
+  // 快照 —— 趋势线悄悄变成别人的账。SQLite 改不了列约束，只能重建表搬数据。
+  // 唯一性从 (ym) 变成 (ym, tenant_id)：单机模式 tenant_id 恒为 1，行为不变。
+  try {
+    // sqlite_master 只在 SQLite 有；PG 的列级约束用 pg_constraint 摘掉
+    if (db.dialect === 'postgres') {
+      db.exec("ALTER TABLE snapshots DROP CONSTRAINT IF EXISTS snapshots_ym_key");
+    } else {
+      const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='snapshots'").get();
+      if (row && /ym\s+TEXT\s+NOT\s+NULL\s+UNIQUE/i.test(String(row.sql))) {
+      const hasTenant = db.columns('snapshots').includes('tenant_id');
+      db.exec('BEGIN');
+      try {
+        db.exec(`CREATE TABLE snapshots_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ym TEXT NOT NULL,
+          tenant_id BIGINT DEFAULT 1,
+          kind TEXT DEFAULT 'manual',
+          note TEXT,
+          data TEXT,
+          captured_at TEXT
+        );`);
+        db.exec(`INSERT INTO snapshots_new (id, ym, ${hasTenant ? 'tenant_id, ' : ''}kind, note, data, captured_at)
+          SELECT id, ym, ${hasTenant ? 'COALESCE(tenant_id, 1), ' : ''}kind, note, data, captured_at FROM snapshots`);
+        db.exec('DROP TABLE snapshots');
+        db.exec('ALTER TABLE snapshots_new RENAME TO snapshots');
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+      }
+    }
+  } catch (e) {
+    // 诚实抛错：吞掉的话，后面 capture 的 ON CONFLICT(ym, tenant_id) 找不到
+    // 匹配的约束会崩，而且错因藏得更深。
+    throw new Error('[快照] 唯一约束迁移失败：' + e.message);
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_ym_tenant ON snapshots(ym, tenant_id);');
 }
 
 /** 把"现在这一刻"的经营数据打包存下来 */
@@ -40,27 +87,30 @@ function capture (ym, kind = 'manual', note = null) {
     reminder_count: (d.reminders || []).length,
     today: d.today,
   };
-  db.prepare(`INSERT INTO snapshots (ym, kind, note, data, captured_at) VALUES (?,?,?,?,?)
-    ON CONFLICT(ym) DO UPDATE SET kind = excluded.kind, note = excluded.note, data = excluded.data, captured_at = excluded.captured_at`)
-    .run(ym, kind, note, JSON.stringify(payload), nowISO());
-  db.prepare(`DELETE FROM snapshots WHERE id NOT IN (
+  // 快照内容来自 dashboard()，它已经按当前租户取数；
+  // 但 snapshots 表本身也要按租户各存一份，否则租户 B 结账会覆盖租户 A 的快照
+  db.prepare(`INSERT INTO snapshots (ym, tenant_id, kind, note, data, captured_at) VALUES (?,?,?,?,?,?)
+    ON CONFLICT(ym, tenant_id) DO UPDATE SET kind = excluded.kind, note = excluded.note, data = excluded.data, captured_at = excluded.captured_at`)
+    .run(ym, tenantCtx.stampTenant(), kind, note, JSON.stringify(payload), nowISO());
+  // 容量上限按全局算：这是存储保护，不是业务口径
+  db.prepare(`DELETE FROM snapshots ${GLOBAL} WHERE id NOT IN (
       SELECT id FROM snapshots ORDER BY ym DESC LIMIT ?)`).run(KEEP_MONTHS);
   return { ok: true, ym, kind, note };
 }
 
 function get (ym) {
-  const r = db.prepare('SELECT * FROM snapshots WHERE ym = ?').get(String(ym || ''));
+  const r = db.prepare(`SELECT * FROM snapshots WHERE ym = ?${snapTenantAnd()}`).get(String(ym || ''));
   if (!r) return null;
   return { id: r.id, ym: r.ym, kind: r.kind, note: r.note, captured_at: r.captured_at, data: safeParse(r.data, {}) };
 }
 
 function list (limit = 24) {
-  return db.prepare('SELECT id, ym, kind, note, captured_at FROM snapshots ORDER BY ym DESC LIMIT ?')
+  return db.prepare(`SELECT id, ym, kind, note, captured_at FROM snapshots${snapTenantWhere()} ORDER BY ym DESC LIMIT ?`)
     .all(Math.max(1, parseInt(limit, 10) || 24));
 }
 
 function remove (ym) {
-  return { deleted: Number(db.prepare('DELETE FROM snapshots WHERE ym = ?').run(String(ym || '')).changes) };
+  return { deleted: Number(db.prepare(`DELETE FROM snapshots WHERE ym = ?${snapTenantAnd()}`).run(String(ym || '')).changes) };
 }
 
 /** 启动时补记上个月的快照（已经有了就跳过） */
@@ -70,7 +120,7 @@ function ensureMonthly () {
   if (!y || !m) return null;
   const prev = new Date(y, m - 2, 1);
   const ym = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
-  if (db.prepare('SELECT id FROM snapshots WHERE ym = ?').get(ym)) return null;
+  if (db.prepare(`SELECT id FROM snapshots WHERE ym = ?${snapTenantAnd()}`).get(ym)) return null;
   capture(ym, 'auto', `${t} 自动补记，代表 ${ym} 月末的账面状态`);
   return ym;
 }
@@ -85,7 +135,7 @@ function ensureMonthly () {
  * @param {object} [curTotals] 调用方已算好的总览合计；不传则内部自己算一次
  */
 function trend (limit = 12, curTotals) {
-  const rows = db.prepare('SELECT ym, data FROM snapshots ORDER BY ym DESC LIMIT ?')
+  const rows = db.prepare(`SELECT ym, data FROM snapshots${snapTenantWhere()} ORDER BY ym DESC LIMIT ?`)
     .all(Math.max(1, parseInt(limit, 10) || 12)).reverse();
   const pick = (d) => {
     const t = (d && d.totals) || {};
@@ -115,7 +165,7 @@ function trend (limit = 12, curTotals) {
 
 /** 环比：本月 vs 上一条快照 */
 function mom (curTotals) {
-  const rows = db.prepare('SELECT ym, data FROM snapshots ORDER BY ym DESC LIMIT 1').all();
+  const rows = db.prepare(`SELECT ym, data FROM snapshots${snapTenantWhere()} ORDER BY ym DESC LIMIT 1`).all();
   // 没有快照就没有环比，**先返回**再算总览 —— 否则新装的库每次开首页都白算一遍
   if (!rows.length) return null;
   const cur = curTotals || dashboard().totals;

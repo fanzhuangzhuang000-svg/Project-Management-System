@@ -223,6 +223,8 @@ function list (f = {}) {
 }
 
 function stats () {
+  // 多租户按租户统计；scope() 返回裸条件，WHERE 前缀在这里补
+  const t = tenantCtx.scope();
   const r = db.prepare(`SELECT
       COUNT(*) AS total,
       COALESCE(SUM(size),0) AS bytes,
@@ -231,7 +233,7 @@ function stats () {
       SUM(CASE WHEN ocr_status='failed' THEN 1 ELSE 0 END) AS failed,
       SUM(CASE WHEN record_id IS NULL AND detached = 0 THEN 1 ELSE 0 END) AS orphan,
       SUM(CASE WHEN detached = 1 THEN 1 ELSE 0 END) AS detached
-    FROM attachments`).get();
+    FROM attachments${t ? ' WHERE ' + t : ''}`).get();
   return {
     total: r.total, bytes: r.bytes, done: r.done || 0, pending: r.pending || 0,
     failed: r.failed || 0, orphan: r.orphan || 0, detached: r.detached || 0,

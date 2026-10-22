@@ -42,6 +42,9 @@ const origPrepare = db.prepare.bind(db);
 
 db.prepare = function (sql) {
   const s = String(sql || '');
+  // /* tenant-global */：孤儿清理、快照容量回收这类「有意的跨租户全局操作」豁免
+  if (/tenant-global/i.test(s)) return origPrepare(sql);
+  if (/sqlite_master|information_schema/i.test(s)) return origPrepare(sql);   // 目录/元数据查询不碰业务行
   const touchesRows = /\b(from|update)\b/i.test(s) || /^\s*delete\s+from/i.test(s);
   if (touchesRows && !/tenant_id/i.test(s)) {
     const hit = TENANT_TABLES.find(t => new RegExp(`\\b${t}\\b`, 'i').test(s));
@@ -73,8 +76,9 @@ function main () {
   require('../snapshots.js').createTable();
   require('../trash.js').createTable();
 
-  const pj = db.prepare('SELECT id FROM projects ORDER BY id LIMIT 1').get();
-  const ct = db.prepare('SELECT id FROM contracts ORDER BY id LIMIT 1').get();
+  // 取样查询是审计工具自己拿 id 用的，故意全局（带豁免标记，别把自己算进漏点）
+  const pj = db.prepare('SELECT id FROM projects /* tenant-global */ ORDER BY id LIMIT 1').get();
+  const ct = db.prepare('SELECT id FROM contracts /* tenant-global */ ORDER BY id LIMIT 1').get();
   const pid = pj ? pj.id : 1;
   const cid = ct ? ct.id : 1;
 

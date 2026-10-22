@@ -659,8 +659,8 @@ function dependents (table, id) {
       //    变更的 project_id 是选填的（选好合同会自动带出，也可以不填），
       //    只关联了合同的那部分也要算进来，否则又少报。
       contract_changes: db.prepare(`SELECT COUNT(*) n FROM contract_changes
-        WHERE project_id = ? OR contract_id IN (SELECT id FROM contracts WHERE project_id = ?)`)
-        .get(i, i).n,
+        WHERE (project_id = @i OR contract_id IN (SELECT id FROM contracts WHERE project_id = @i))${tw('', true)}`)
+        .get({ i }).n,
     };
   }
   if (table === 'contracts') {
@@ -880,7 +880,7 @@ function decorateSchedules (rows) {
 
 function scheduleStats (projectId) {
   const pid = parseInt(projectId, 10);
-  const rows = decorateSchedules(db.prepare('SELECT * FROM schedules WHERE project_id = ?').all(pid));
+  const rows = decorateSchedules(db.prepare(`SELECT * FROM schedules WHERE project_id = ?${tw('', true)}`).all(pid));
   const agg = (dir) => {
     const list = rows.filter(r => r.direction === dir);
     const plan = round2(list.reduce((s, r) => s + num(r.amount), 0));
@@ -898,7 +898,7 @@ function scheduleStats (projectId) {
 function changeMap (table = 'contracts') {
   const map = new Map();
   for (const r of db.prepare(`SELECT contract_id, SUM(amount_delta) AS d, COUNT(*) AS n
-      FROM contract_changes WHERE status = '已确认' AND contract_id IS NOT NULL GROUP BY contract_id`).all()) {
+      FROM contract_changes cc WHERE cc.status = '已确认' AND cc.contract_id IS NOT NULL${tw('cc.', true)} GROUP BY contract_id`).all()) {
     map.set(r.contract_id, { delta: round2(r.d), count: r.n });
   }
   return map;
@@ -923,7 +923,8 @@ function decorateContracts (rows) {
  */
 function invoicePaidMap () {
   const map = new Map();
-  for (const r of db.prepare('SELECT invoice_id, SUM(amount) AS amt FROM payments WHERE invoice_id IS NOT NULL GROUP BY invoice_id').all()) {
+  for (const r of db.prepare(`SELECT invoice_id, SUM(amount) AS amt FROM payments p
+      WHERE p.invoice_id IS NOT NULL${tw('p.', true)} GROUP BY invoice_id`).all()) {
     map.set(r.invoice_id, round2(r.amt));
   }
   return map;
@@ -1047,8 +1048,14 @@ function backfillInvoiceLinks () {
  */
 function invoiceReconcile (projectId) {
   const pid = projectId ? parseInt(projectId, 10) : null;
-  const wInv = pid ? 'WHERE project_id = ?' : '';
-  const wPay = pid ? 'WHERE p.project_id = ?' : '';
+  // 拼接规则：pid 存在时已有 WHERE project_id，租户条件用 AND；没有 pid 时租户条件自己带 WHERE。
+  // 单机模式 tw 系列全返回空串，SQL 与改前逐字相同。
+  const hasW = !!pid;
+  const tInv = hasW ? tw('', true) : tw();
+  const tPay = hasW ? tw('p.', true) : tw('p.');
+  const tPayRaw = hasW ? tw('', true) : tw();
+  const wInv = (pid ? 'WHERE project_id = ?' : '') + tInv;
+  const wPay = (pid ? 'WHERE p.project_id = ?' : '') + tPay;
   const args = pid ? [pid] : [];
   const inv = db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN direction='out' THEN total_amount ELSE 0 END),0) AS out_total,
@@ -1062,7 +1069,7 @@ function invoiceReconcile (projectId) {
   const pay = db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN direction='in'  THEN amount ELSE 0 END),0) AS paid_in,
       COALESCE(SUM(CASE WHEN direction='out' THEN amount ELSE 0 END),0) AS paid_out
-    FROM payments ${pid ? 'WHERE project_id = ?' : ''}`).get(...args);
+    FROM payments ${pid ? 'WHERE project_id = ?' : ''}${tPayRaw}`).get(...args);
 
   const invOut = round2(inv.out_total), invIn = round2(inv.in_total);
   const paidIn = round2(pay.paid_in), paidOut = round2(pay.paid_out);
@@ -1231,9 +1238,9 @@ function projectStats (projectId) {
 }
 
 function dashboard () {
-  const projects = db.prepare('SELECT id, code, name, status, category, manager, progress, start_date, end_date, client_id FROM projects ORDER BY id DESC').all();
+  const projects = db.prepare(`SELECT id, code, name, status, category, manager, progress, start_date, end_date, client_id FROM projects${tw()} ORDER BY id DESC`).all();
   const clientMap = {};
-  for (const r of db.prepare('SELECT id, name FROM partners').all()) clientMap[r.id] = r.name;
+  for (const r of db.prepare(`SELECT id, name FROM partners${tw()}`).all()) clientMap[r.id] = r.name;
 
   // 一次算完所有项目的统计（批量版固定 8 条 SQL，不再每个项目跑一遍）
   const statMap = projectStatsMany(projects.map(p => p.id));
@@ -1565,7 +1572,7 @@ function weekFlows (t) {
   const r = db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN direction='in'  THEN amount ELSE 0 END),0) AS in_w,
       COALESCE(SUM(CASE WHEN direction='out' THEN amount ELSE 0 END),0) AS out_w
-    FROM payments WHERE pay_date >= ?`).get(monISO);
+    FROM payments WHERE pay_date >= ?${tw('', true)}`).get(monISO);
   return { in: round2(r.in_w), out: round2(r.out_w) };
 }
 
@@ -1579,7 +1586,7 @@ function weekFlows (t) {
  */
 function contractFlows (t) {
   const sum = (from, to) => round2(db.prepare(`SELECT COALESCE(SUM(amount),0) v FROM contracts
-    WHERE direction='in' AND sign_date >= ? AND sign_date <= ?`).get(from, to).v);
+    WHERE direction='in' AND sign_date >= ? AND sign_date <= ?${tw('', true)}`).get(from, to).v);
   const ym = t.slice(0, 7);
   const [y, m] = ym.split('-').map(Number);
   const prev = new Date(y, m - 2, 1);
@@ -1599,12 +1606,12 @@ function contractFlows (t) {
 function extraStats (t, thisMonth) {
   let staff = 0, newProjects = 0, todoCount = 0;
   try { staff = db.prepare("SELECT COUNT(*) c FROM users WHERE status='启用'").get().c; } catch { /* 表不在就不给 */ }
-  try { newProjects = db.prepare("SELECT COUNT(*) c FROM projects WHERE substr(created_at,1,7)=?").get(thisMonth).c; } catch { /* 同上 */ }
+  try { newProjects = db.prepare("SELECT COUNT(*) c FROM projects WHERE substr(created_at,1,7)=?" + tw('', true)).get(thisMonth).c; } catch { /* 同上 */ }
   try {
     const r = db.prepare(`SELECT
-        (SELECT COUNT(*) FROM schedules WHERE remaining > 0.005 AND direction='in') AS a,
-        (SELECT COUNT(*) FROM maintenance WHERE status <> '已完成' AND status <> '已关闭') AS b,
-        (SELECT COUNT(*) FROM invoices WHERE direction='out' AND status='未回款') AS c
+        (SELECT COUNT(*) FROM schedules WHERE remaining > 0.005 AND direction='in'${tw('', true)}) AS a,
+        (SELECT COUNT(*) FROM maintenance WHERE status <> '已完成' AND status <> '已关闭'${tw('', true)}) AS b,
+        (SELECT COUNT(*) FROM invoices WHERE direction='out' AND status='未回款'${tw('', true)}) AS c
       `).get();
     todoCount = (r.a || 0) + (r.b || 0) + (r.c || 0);
   } catch { /* 同上 */ }
@@ -1626,7 +1633,7 @@ function extraStats (t, thisMonth) {
  * 现在统一从 projectStatsMany 取，口径永远一致。
  */
 function collectRank () {
-  const rows = db.prepare('SELECT id, name FROM projects').all();
+  const rows = db.prepare(`SELECT id, name FROM projects${tw()}`).all();
   if (!rows.length) return [];
   const statMap = projectStatsMany(rows.map(r => r.id));
   return rows
@@ -1716,13 +1723,17 @@ function projectDetail (id) {
   const p = getRow('projects', id);
   if (!p) return null;
   const pid = parseInt(id, 10);
+  // 子表查询也要隔离：项目本身是本租户的（getRow 已按租户校验），
+  // 但子表行万一有历史脏数据跨了租户，这里不带条件就会把它们一并带出去。
+  const tCond = tenantCtx.scope('t.');
+  const tSuffix = tCond ? ` AND ${tCond}` : '';
   const q = (table, order) => {
     const { cols, from } = selectSQL(table);
-    return db.prepare(`SELECT ${cols.join(', ')} FROM ${from} WHERE t.project_id = ? ORDER BY ${order}`).all(pid);
+    return db.prepare(`SELECT ${cols.join(', ')} FROM ${from} WHERE t.project_id = ?${tSuffix} ORDER BY ${order}`).all(pid);
   };
   const sched = (() => {
     const { cols, from } = selectSQL('schedules');
-    return db.prepare(`SELECT ${cols.join(', ')} FROM ${from} WHERE t.project_id = ? ORDER BY t.direction, t.due_date, t.id`).all(pid);
+    return db.prepare(`SELECT ${cols.join(', ')} FROM ${from} WHERE t.project_id = ?${tSuffix} ORDER BY t.direction, t.due_date, t.id`).all(pid);
   })();
   decorateSchedules(sched);
   const inv = q('invoices', 't.issue_date DESC, t.id DESC');
@@ -2097,24 +2108,29 @@ const PROJECT_CHILD_TABLES = ['contracts', 'contract_changes', 'schedules', 'pay
 function projectChildTables () { return PROJECT_CHILD_TABLES; }
 
 function sweepOrphans () {
+  // ⚠️ 这里**故意**不带 tenant_id —— 孤儿行（指向已删除的合同/项目的残留行）
+  //    本来就不属于任何租户，必须跨租户全局清理，否则启动自检只清得了
+  //    默认租户的孤儿，其他租户的孤儿永远留着。
+  //    用 /* tenant-global */ 标记向审计工具和租户守卫声明这是有意的全局操作。
+  const GLOBAL = '/* tenant-global */';
   const out = {};
   for (const t of PROJECT_CHILD_TABLES) {
-    const r = db.prepare(`DELETE FROM ${t}
+    const r = db.prepare(`DELETE FROM ${t} ${GLOBAL}
       WHERE project_id IS NOT NULL AND project_id NOT IN (SELECT id FROM projects)`).run();
     if (Number(r.changes)) out[t] = Number(r.changes);
   }
   // 合同被删后残留的计划节点 / 挂在不存在合同上的收付款、发票、材料、费用
-  const r2 = db.prepare(`DELETE FROM schedules
+  const r2 = db.prepare(`DELETE FROM schedules ${GLOBAL}
     WHERE contract_id IS NOT NULL AND contract_id NOT IN (SELECT id FROM contracts)`).run();
   if (Number(r2.changes)) out.schedules_of_contract = Number(r2.changes);
   // 合同变更的 contract_id 是 NOT NULL —— 没法像上面那样「解除关联」，只能删掉。
   // 上面按 project_id 扫的那一遍漏掉「没填项目、只挂了合同」的记录，
   // 合同一旦没了它们就是孤儿：列表里点开什么都没有，也无法再挂回任何合同。
-  const r2c = db.prepare(`DELETE FROM contract_changes
+  const r2c = db.prepare(`DELETE FROM contract_changes ${GLOBAL}
     WHERE contract_id NOT IN (SELECT id FROM contracts)`).run();
   if (Number(r2c.changes)) out.contract_changes_of_contract = Number(r2c.changes);
   for (const t of ['payments', 'invoices', 'materials', 'expenses']) {
-    const r = db.prepare(`UPDATE ${t} SET contract_id = NULL
+    const r = db.prepare(`UPDATE ${t} ${GLOBAL} SET contract_id = NULL
       WHERE contract_id IS NOT NULL AND contract_id NOT IN (SELECT id FROM contracts)`).run();
     if (Number(r.changes)) out[`${t}_unlinked`] = Number(r.changes);
   }
@@ -2169,7 +2185,8 @@ function init () {
 function recordCounts () {
   const out = {};
   for (const t of TABLE_ORDER) {
-    try { out[t] = db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n; } catch { out[t] = 0; }
+    // 多租户下按当前租户计（启动时无请求上下文，退回默认租户；请求内自检则随请求租户）
+    try { out[t] = db.prepare(`SELECT COUNT(*) n FROM ${t}${tw()}`).get().n; } catch { out[t] = 0; }
   }
   return out;
 }
@@ -2199,7 +2216,8 @@ function installTenantGuard () {
     // 只管「按行访问」：SELECT / UPDATE / DELETE。
     // INSERT 靠 stampTenant 写入，不需要 tenant 条件；DDL 不涉及行。
     const touchesRows = /\b(from|update)\b/i.test(s) || /^\s*delete\s+from/i.test(s);
-    if (touchesRows && !/tenant_id/i.test(s)) {
+    // /* tenant-global */：孤儿清理等「有意的跨租户全局操作」豁免（见 sweepOrphans）
+    if (touchesRows && !/tenant_id/i.test(s) && !/tenant-global/i.test(s)) {
       const hit = TENANT_TABLES.find(t => new RegExp(`\\b${t}\\b`, 'i').test(s));
       if (hit) {
         const brief = s.replace(/\s+/g, ' ').trim().slice(0, 140);
