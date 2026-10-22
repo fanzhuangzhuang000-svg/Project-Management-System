@@ -114,16 +114,23 @@ PMS_PORT=8801 PMS_DATA_DIR=./data-test npm start
 跑测试时 **`PMS_PORT` / `PMS_DATA_DIR` / `PMS_BASE` 要同时给服务端和测试进程**：
 
 ```bash
-PMS_PORT=8899 PMS_DATA_DIR=./data-test PMS_BASE=http://127.0.0.1:8899 \
+PMS_PORT=8792 PMS_DATA_DIR=./data-test PMS_BASE=http://127.0.0.1:8792 \
   node server.js &
-PMS_PORT=8899 PMS_DATA_DIR=./data-test PMS_BASE=http://127.0.0.1:8899 \
+PMS_PORT=8792 PMS_DATA_DIR=./data-test PMS_BASE=http://127.0.0.1:8792 \
   node tools/run-all.js
 ```
+
+> 都不用给也行：`node tools/run-all.js` 会自己起一个 **8792** 的测试实例
+> （`tools/test-base.js` 里的默认值），跑完自动关掉。8792 是测试专用端口，
+> 不占任何部署形态的端口。手动指定时把上面三个变量一起给。
 
 **为什么必须一致**：`tools/test-auth.js` 是**直接改本地数据库**来准备管理员账号的
 （`require('../auth.js')`），它操作的是"测试进程自己的 `PMS_DATA_DIR`"；
 而测试发 HTTP 请求打的是 `PMS_BASE`。两边不一致 = 测试写 A 库、请求打 B 库，
 表现是**大面积莫名失败**（实测 25 个套件里 15 个假红），而且报错完全看不出根因。
+
+这条现在**由代码强制**：登录前 `assertSameDb()` 会比对 `/api/health` 返回的
+`dbId`（数据库路径的哈希）与本进程的 `DB_FILE`，不一致直接抛错并打印两边的库。
 
 ## 三套环境的默认端口
 

@@ -1,7 +1,7 @@
 'use strict';
 /**
  * 批量导入端到端测试
- *   node tools/import-test.js [http://127.0.0.1:8899]
+ *   node tools/import-test.js [http://127.0.0.1:8792]
  *
  * 覆盖：xlsx 解析、GBK/UTF-8 CSV、表头自动对应、外键按名称解析、
  *       Excel 日期序列号、金额千分位、收支方向容错、错误行定位、清理。

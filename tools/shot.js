@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const TAUTH = require('./test-auth.js');
 
-const BASE = process.argv[2] || 'http://127.0.0.1:8899';
+const BASE = process.argv[2] || 'http://127.0.0.1:8792';
 const OUT = process.argv[3] || path.join(os.tmpdir(), 'pms_shots');
 const PORT = 9444;
 const EDGE = [

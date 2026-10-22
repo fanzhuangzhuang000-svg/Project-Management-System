@@ -8,7 +8,7 @@ const http = require('node:http');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const T = require('./test-auth.js');
 
-const BASE = process.argv[2] || 'http://127.0.0.1:8899';
+const BASE = process.argv[2] || 'http://127.0.0.1:8792';
 const OUT = process.argv[3] || path.join(os.tmpdir(), 'pms_ai_shots');
 const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 const PORT = 9555, MOCK = 18897;

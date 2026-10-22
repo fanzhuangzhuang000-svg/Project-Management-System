@@ -51,7 +51,7 @@ const SHOTS = [
 
   // 登录页
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
-  await send('Page.navigate', { url: 'http://127.0.0.1:8899/' });
+  await send('Page.navigate', { url: 'http://127.0.0.1:8792/' });
   await wait(`!!document.querySelector('input[autocomplete="username"]')`, 15000);
   await sleep(900);
   console.log('  01-登录页.png  ' + Math.round(await shot(path.join(OUT, '01-登录页.png'), false) / 1024) + ' KB');
@@ -93,13 +93,13 @@ const SHOTS = [
     const buf = fs.readFileSync(path.join(__dirname, 'fixtures', 'contract.pdf'));
     const fd = new FormData();
     fd.append('file', new Blob([buf], { type: 'application/pdf' }), '示例-合同扫描件.pdf');
-    const up = await fetch('http://127.0.0.1:8899/api/upload', {
+    const up = await fetch('http://127.0.0.1:8792/api/upload', {
       method: 'POST', headers: { Cookie: 'pms_session=' + token }, body: fd,
     }).then(r => r.json());
     ocrId = up.attachment?.id || null;
     for (let i = 0; i < 30; i++) {
       await sleep(1000);
-      const l = await fetch('http://127.0.0.1:8899/api/attachments?q=' + encodeURIComponent('示例-合同扫描件'), {
+      const l = await fetch('http://127.0.0.1:8792/api/attachments?q=' + encodeURIComponent('示例-合同扫描件'), {
         headers: { Cookie: 'pms_session=' + token },
       }).then(r => r.json());
       if ((l.rows || [])[0]?.ocr_status === 'done') break;
@@ -122,10 +122,10 @@ const SHOTS = [
     // 清理截图用的样例附件
     try {
       const token = await T.login();
-      if (ocrId) await fetch('http://127.0.0.1:8899/api/attachments/' + ocrId + '/delete', {
+      if (ocrId) await fetch('http://127.0.0.1:8792/api/attachments/' + ocrId + '/delete', {
         method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: 'pms_session=' + token }, body: '{}',
       });
-      await fetch('http://127.0.0.1:8899/api/trash/purge-all', {
+      await fetch('http://127.0.0.1:8792/api/trash/purge-all', {
         method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: 'pms_session=' + token }, body: '{}',
       });
     } catch { /* 忽略 */ }

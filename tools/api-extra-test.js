@@ -2,7 +2,7 @@
 /**
  * 边角接口 + 越权回归（第十套）
  *
- * 用法： node tools/api-extra-test.js [http://127.0.0.1:8899]
+ * 用法： node tools/api-extra-test.js [http://127.0.0.1:8792]
  *
  * 为什么单独一套：
  *   tools/ 下原有的 28 个套件把主要业务都测了，但有一批接口**从来没有任何

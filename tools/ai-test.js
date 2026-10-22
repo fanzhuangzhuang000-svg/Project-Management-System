@@ -6,7 +6,7 @@
  * 把 AI 配置指向它，就能完整验证 —— 配置、密钥脱敏、测试连接、
  * 流式对话、上下文注入、权限过滤、限速、错误提示。
  *
- * 用法： node tools/ai-test.js [http://127.0.0.1:8899]
+ * 用法： node tools/ai-test.js [http://127.0.0.1:8792]
  */
 const http = require('node:http');
 const fs = require('node:fs');

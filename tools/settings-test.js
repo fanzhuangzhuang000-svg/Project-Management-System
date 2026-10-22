@@ -10,7 +10,7 @@
  *   - 未登录也能拿到品牌信息（登录页要显示系统名）
  *   - 公司名为空时的兜底
  *
- * 用法： node tools/settings-test.js [http://127.0.0.1:8899]
+ * 用法： node tools/settings-test.js [http://127.0.0.1:8792]
  */
 const T = require('./test-auth.js');
 const BASE = process.argv[2] || T.BASE;

@@ -89,7 +89,7 @@ async function assertSameDb () {
     const r = await fetch(BASE + '/api/health');
     h = await r.json();
   } catch (e) {
-    throw new Error(`连不上测试服务 ${BASE}。先在仓库根目录跑 node tools/run-all.js（它会自己起一个 8899 的测试实例），或用 PMS_BASE 指定地址。`);
+    throw new Error(`连不上测试服务 ${BASE}。先在仓库根目录跑 node tools/run-all.js（它会自己起一个 8792 的测试实例），或用 PMS_BASE 指定地址。`);
   }
   const dbf = require('../db.js');
   // 归一化必须和 server.js 的 DB_ID 完全一致（resolve + 斜杠 + 小写），

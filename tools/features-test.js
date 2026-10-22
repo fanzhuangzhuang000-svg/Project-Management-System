@@ -1,7 +1,7 @@
 'use strict';
 /**
  * 新增功能端到端测试：费用与动态毛利 / 账龄 / 回收站还原 / 操作日志 / 对账单
- *   node tools/features-test.js [http://127.0.0.1:8899]
+ *   node tools/features-test.js [http://127.0.0.1:8792]
  */
 const fs = require('node:fs');
 const path = require('node:path');
