@@ -18,7 +18,25 @@
  */
 const dbf = () => require('./db.js');
 
-let current = 1;
+// ── 租户上下文为什么必须用 AsyncLocalStorage ──
+//
+// 以前是一个模块级变量 `let current = 1`。在「一个请求从头到尾同步跑完」的理想情况下
+// 还没问题，但这套服务是 async 的：handleApi 里到处是 await（读请求体、附件、AI 调用）。
+// 一旦在 await 处让出事件循环，另一个用户的请求就会插进来执行，
+// 它调的 setTenant() 会把这个**共享变量**改掉 —— 回到第一个请求时，
+// 它后面的查询就带上了别人的 tenant_id。
+//
+// 这类串号不会报错，只会在某个时刻把 A 部门的数据算进 B 部门，
+// 而且越是并发高越容易出现 —— 恰好是「公司几十人一起用」的场景。
+//
+// AsyncLocalStorage 是 Node 内建的「按异步调用链隔离的存储」：
+// 每个请求在自己的上下文里读写，await 前后自动保持一致，互不干扰。
+// 没有上下文时（脚本、测试直接调用）退回 fallback，行为与以前一致。
+const { AsyncLocalStorage } = require('node:async_hooks');
+const als = new AsyncLocalStorage();
+
+/** 没有请求上下文时的值（脚本/测试直接用 dbf 时走这里） */
+let fallbackTenant = 1;
 
 /** 是否启用多租户隔离 */
 function isMultiTenant () {
@@ -27,17 +45,34 @@ function isMultiTenant () {
 }
 
 function currentTenant () {
-  return current;
+  const store = als.getStore();
+  return store ? store.tenantId : fallbackTenant;
 }
 
 /** 切换当前请求的租户（登录时按账号的 tenant_id 设置） */
 function setTenant (id) {
   const n = Number(id);
-  current = Number.isFinite(n) && n > 0 ? n : 1;
-  return current;
+  const v = Number.isFinite(n) && n > 0 ? n : 1;
+  const store = als.getStore();
+  if (store) { store.tenantId = v; return v; }
+  fallbackTenant = v;
+  return v;
 }
 
-function reset () { current = 1 }
+/**
+ * 在一个租户上下文里执行 fn。
+ * 服务端每个请求入口都要用它包一层，否则 currentTenant() 拿到的是 fallback。
+ */
+function runWithTenant (id, fn) {
+  const n = Number(id);
+  return als.run({ tenantId: Number.isFinite(n) && n > 0 ? n : 1 }, fn);
+}
+
+function reset () {
+  const store = als.getStore();
+  if (store) store.tenantId = 1;
+  else fallbackTenant = 1;
+}
 
 /**
  * 给查询加上租户条件。
@@ -47,12 +82,12 @@ function reset () { current = 1 }
 function where (alias = '') {
   // 单机模式返回空串 —— 调用方据此判断「不加任何条件」，
   // 这样现有的 SQL 一个字都不会变。
-  return isMultiTenant() ? alias + 'tenant_id = ' + current : '';
+  return isMultiTenant() ? alias + 'tenant_id = ' + currentTenant() : '';
 }
 
 /** 新插入的行该带什么 tenant_id */
 function stampTenant () {
-  return current;
+  return currentTenant();
 }
 
 /**
@@ -204,7 +239,7 @@ function count () {
 }
 
 module.exports = {
-  isMultiTenant, currentTenant, setTenant, reset,
+  isMultiTenant, currentTenant, setTenant, runWithTenant, reset,
   where, scope: where, stampTenant,
   list, get, create, update, stats, count, ensureColumns,
 };

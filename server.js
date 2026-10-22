@@ -25,6 +25,9 @@ const tabular = require('./tools/tabular.js');
 const { recognize, health: ocrHealth, describeBackend: describeOcrBackend } = require('./tools/ocr.js');
 const ingest = require('./tools/ingest.js');
 const { TABLES, TABLE_ORDER } = require('./schema.js');
+// 多租户上下文。以前这个模块只有「模块级变量」，而 server.js 从来没调过 setTenant() ——
+// 等于 MULTI_TENANT=1 打开后所有人仍然读写租户 1 的数据，隔离一行都没生效。
+const tenantCtx = require('./tenant.js');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const APP_NAME = '弱电智能化工程项目管理系统';
@@ -2153,7 +2156,12 @@ const server = http.createServer((req, res) => {
       }
     }
     Promise.resolve()
-      .then(() => handleApi(req, res, url))
+      // 整个请求都在「这个账号所属租户」的上下文里跑。
+      // AsyncLocalStorage 会把上下文绑到整条异步链上，所以 handleApi 里
+      // 每一次 await 之后拿到的仍然是本请求自己的租户，不会串到别人。
+      // 未登录的接口（health / login）走租户 1，登录接口在内部会按账号重新设置。
+      .then(() => tenantCtx.runWithTenant(req.user ? req.user.tenant_id : 1,
+        () => handleApi(req, res, url)))
       .catch(e => {
         console.error('[API 错误]', e);
         if (!res.headersSent) sendJSON(res, 500, { error: e.message || '服务器内部错误' });

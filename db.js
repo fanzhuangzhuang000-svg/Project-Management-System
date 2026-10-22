@@ -567,7 +567,7 @@ function refOptions () {
   for (const t of TABLE_ORDER) {
     if (!need.has(t)) continue;
     const def = TABLES[t];
-    const rows = db.prepare(`SELECT id, ${def.display} AS label FROM ${t} ORDER BY id DESC`).all();
+    const rows = db.prepare(`SELECT id, ${def.display} AS label FROM ${t}${tw()} ORDER BY id DESC`).all();
     out[t] = rows.map(r => ({ value: r.id, label: r.label === null || r.label === undefined || r.label === '' ? `#${r.id}` : String(r.label) }));
   }
   return out;
@@ -576,7 +576,7 @@ function refOptions () {
 /** 某张表在选项里的总数（前端据此判断要不要提示"用搜索找更多"） */
 function refOptionsCount (table) {
   if (!refTables().has(table)) return 0;
-  return db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
+  return db.prepare(`SELECT COUNT(*) AS n FROM ${table}${tw()}`).get().n;
 }
 
 // ---------------- 写入 ----------------
@@ -638,7 +638,11 @@ function deleteRow (table, id) {
 /** 删除前的关联引用检查 */
 function dependents (table, id) {
   const i = parseInt(id, 10);
-  const count = (sql) => db.prepare(sql).get(i).n;
+  // 所有计数都走这里，所以租户条件也只需要加一次 —— 下面 20 多条 SQL 全都被覆盖。
+  // 每条都自带 `WHERE xxx_id = ?`，用 tw('', true) 追加 ' AND tenant_id = ?'。
+  // 不加的话，多租户下「删项目」的确认框会把**别人部门**的合同数算进来，
+  // 显示「将同时删除 合同 3」而实际只删了自己那 1 份。
+  const count = (sql) => db.prepare(sql + tw('', true)).get(i).n;
   if (table === 'projects') {
     return {
       contracts: count('SELECT COUNT(*) n FROM contracts WHERE project_id = ?'),
@@ -789,6 +793,28 @@ function batchDelete (table, ids, opts = {}) {
   }
 }
 
+// ---------------- 多租户条件（统一收口） ----------------
+/**
+ * 生成租户过滤条件的 SQL 片段。
+ *
+ * 为什么要有这个函数：多租户审计（tools/tenant-audit.js）扫出来 120 个
+ * 「函数 × 表」组合漏了 tenant_id —— 全都集中在聚合、计数、下拉选项这类
+ * 「不是列表页」的查询上。逐条手写 `WHERE tenant_id = ?` 既啰嗦又容易再漏，
+ * 所以统一走这两个入口：
+ *
+ *   tw('t.')            → ' WHERE t.tenant_id = 1'   （还没有 WHERE 时）
+ *   tw('t.', true)      → ' AND t.tenant_id = 1'     （已经有 WHERE 时）
+ *   tw()                → ''                         （单机模式，SQL 一个字不变）
+ *
+ * 单机模式下 scope() 返回空串，这里也返回空串 —— 保证不带 MULTI_TENANT 时
+ * 所有现有 SQL 与改动前逐字相同，行为和性能都不变。
+ */
+function tw (alias = '', hasWhere = false) {
+  const cond = tenantCtx.scope(alias);
+  if (!cond) return '';
+  return (hasWhere ? ' AND ' : ' WHERE ') + cond;
+}
+
 // ---------------- 统计 ----------------
 /**
  * 收付款计划节点的自动冲抵
@@ -798,6 +824,7 @@ function batchDelete (table, ids, opts = {}) {
  */
 function scheduleAllocation () {
   const nodes = db.prepare(`SELECT id, project_id, direction, amount FROM schedules
+    ${tw()}
     ORDER BY project_id, direction, due_date, id`).all();
   const pool = {};
   // ⚠️ 这里以前是「把全部收付款明细读出来，在 JS 里按 项目|方向 累加」：
@@ -811,7 +838,7 @@ function scheduleAllocation () {
   //    ⚠️ 冲抵是账目逻辑，改法必须与原来逐字等价：原来是对该分组的金额求和，
   //       SQL 的 SUM() 语义相同；金额为空按 0 计（num()）。
   for (const p of db.prepare(`SELECT project_id, direction, SUM(amount) AS total
-    FROM payments GROUP BY project_id, direction`).all()) {
+    FROM payments${tw()} GROUP BY project_id, direction`).all()) {
     pool[`${p.project_id}|${p.direction}`] = num(p.total);
   }
   const out = new Map();
@@ -1085,39 +1112,39 @@ function projectStatsMany (ids) {
     LEFT JOIN (SELECT contract_id, SUM(amount_delta) AS delta FROM contract_changes
                WHERE status='已确认' AND contract_id IS NOT NULL GROUP BY contract_id) ch
       ON ch.contract_id = c.id
-    WHERE c.project_id IN (${ph})
+    WHERE c.project_id IN (${ph})${tw('c.', true)}
     GROUP BY c.project_id`);
 
   const P = groupOf(`SELECT project_id AS pid,
       COALESCE(SUM(CASE WHEN direction='in'  THEN amount ELSE 0 END),0) AS paid_in,
       COALESCE(SUM(CASE WHEN direction='out' THEN amount ELSE 0 END),0) AS paid_out,
       COUNT(*) AS payment_count
-    FROM payments WHERE project_id IN (${ph}) GROUP BY project_id`);
+    FROM payments WHERE project_id IN (${ph})${tw('', true)} GROUP BY project_id`);
 
   const I = groupOf(`SELECT project_id AS pid,
       COALESCE(SUM(CASE WHEN direction='out' THEN total_amount ELSE 0 END),0) AS inv_out,
       COALESCE(SUM(CASE WHEN direction='in'  THEN total_amount ELSE 0 END),0) AS inv_in,
       COUNT(*) AS invoice_count
-    FROM invoices WHERE project_id IN (${ph}) GROUP BY project_id`);
+    FROM invoices WHERE project_id IN (${ph})${tw('', true)} GROUP BY project_id`);
 
   const M = groupOf(`SELECT project_id AS pid, COALESCE(SUM(amount),0) AS amt, COUNT(*) AS cnt
-    FROM materials WHERE project_id IN (${ph}) GROUP BY project_id`);
+    FROM materials WHERE project_id IN (${ph})${tw('', true)} GROUP BY project_id`);
 
   const E = groupOf(`SELECT project_id AS pid,
       COALESCE(SUM(amount),0) AS cost,
       COALESCE(SUM(amount_ex_tax),0) AS cost_ex,
       COALESCE(SUM(CASE WHEN status='未付' THEN amount ELSE 0 END),0) AS unpaid,
       COUNT(*) AS cnt
-    FROM expenses WHERE project_id IN (${ph}) GROUP BY project_id`);
+    FROM expenses WHERE project_id IN (${ph})${tw('', true)} GROUP BY project_id`);
 
   const MT = groupOf(`SELECT project_id AS pid, COUNT(*) AS cnt,
       COALESCE(SUM(CASE WHEN status IN ('待处理','处理中') THEN 1 ELSE 0 END),0) AS open,
       COALESCE(SUM(cost),0) AS cost
-    FROM maintenance WHERE project_id IN (${ph}) GROUP BY project_id`);
+    FROM maintenance WHERE project_id IN (${ph})${tw('', true)} GROUP BY project_id`);
 
   // 无合同的未付费用（应付账款里单独一档）
   const PE = groupOf(`SELECT project_id AS pid, COALESCE(SUM(amount),0) AS v FROM expenses
-    WHERE project_id IN (${ph}) AND status='未付' AND (contract_id IS NULL OR contract_id = 0)
+    WHERE project_id IN (${ph})${tw('', true)} AND status='未付' AND (contract_id IS NULL OR contract_id = 0)
     GROUP BY project_id`);
 
   // 发票逐笔挂账：需要 JOIN，单独一条
@@ -1126,7 +1153,7 @@ function projectStatsMany (ids) {
       COALESCE(SUM(CASE WHEN p.direction='out' THEN p.amount ELSE 0 END),0) AS in_paid,
       COUNT(*) AS linked_count
     FROM payments p JOIN invoices i ON i.id = p.invoice_id
-    WHERE p.project_id IN (${ph})
+    WHERE p.project_id IN (${ph})${tw('p.', true)}
     GROUP BY p.project_id`);
 
   const EMPTY = {
@@ -1222,7 +1249,7 @@ function dashboard () {
     contract_in_ex: sum('contract_in_ex'), contract_out_ex: sum('contract_out_ex'),
     contract_in_base: sum('contract_in_base'), contract_out_base: sum('contract_out_base'),
     change_in: sum('change_in'), change_out: sum('change_out'),
-    change_count: db.prepare("SELECT COUNT(*) n FROM contract_changes WHERE status='已确认'").get().n,
+    change_count: db.prepare("SELECT COUNT(*) n FROM contract_changes WHERE status='已确认'" + tw('', true)).get().n,
     paid_in: sum('paid_in'), paid_out: sum('paid_out'),
     receivable: sum('receivable'),
     // 应付：合同未付 + 无合同的零星未付费用（两个口径分开统计，别重复加）
@@ -1238,9 +1265,9 @@ function dashboard () {
     maint_count: perProject.reduce((s, p) => s + p.maint_count, 0),
     maint_open: perProject.reduce((s, p) => s + p.maint_open, 0),
     maint_cost: sum('maint_cost'),
-    payment_count: db.prepare('SELECT COUNT(*) n FROM payments').get().n,
-    invoice_count: db.prepare('SELECT COUNT(*) n FROM invoices').get().n,
-    partner_count: db.prepare('SELECT COUNT(*) n FROM partners').get().n,
+    payment_count: db.prepare('SELECT COUNT(*) n FROM payments' + tw()).get().n,
+    invoice_count: db.prepare('SELECT COUNT(*) n FROM invoices' + tw()).get().n,
+    partner_count: db.prepare('SELECT COUNT(*) n FROM partners' + tw()).get().n,
   };
   // 动态毛利：含税收入 − 实际发生成本（真账口径）
   totals.actual_profit = round2(totals.contract_in - totals.cost);
@@ -1275,7 +1302,7 @@ function dashboard () {
   const monthly = db.prepare(`SELECT substr(pay_date,1,7) AS ym,
       COALESCE(SUM(CASE WHEN direction='in'  THEN amount ELSE 0 END),0) AS inflow,
       COALESCE(SUM(CASE WHEN direction='out' THEN amount ELSE 0 END),0) AS outflow
-    FROM payments WHERE pay_date IS NOT NULL AND pay_date <> ''
+    FROM payments WHERE pay_date IS NOT NULL AND pay_date <> ''${tw('', true)}
     GROUP BY ym ORDER BY ym DESC LIMIT 12`).all().reverse();
 
   const t = today();
@@ -1296,16 +1323,16 @@ function dashboard () {
     return `${ny}-${String(nm).padStart(2, '0')}-01`;
   })();
   const monthIn = db.prepare(`SELECT COALESCE(SUM(amount),0) v FROM payments
-    WHERE direction='in' AND pay_date >= ? AND pay_date < ?`).get(monthStart, monthEnd).v;
+    WHERE direction='in' AND pay_date >= ? AND pay_date < ?${tw('', true)}`).get(monthStart, monthEnd).v;
   const monthOut = db.prepare(`SELECT COALESCE(SUM(amount),0) v FROM payments
-    WHERE direction='out' AND pay_date >= ? AND pay_date < ?`).get(monthStart, monthEnd).v;
+    WHERE direction='out' AND pay_date >= ? AND pay_date < ?${tw('', true)}`).get(monthStart, monthEnd).v;
 
   // ---- 收付款计划：节点冲抵、逾期预警、未来 6 个月排期 ----
   const allSched = decorateSchedules(db.prepare(`SELECT s.*, p.name AS project_name, p.code AS project_code,
       c.name AS contract_name
     FROM schedules s
     LEFT JOIN projects p ON p.id = s.project_id
-    LEFT JOIN contracts c ON c.id = s.contract_id`).all());
+    LEFT JOIN contracts c ON c.id = s.contract_id${tw('s.')}`).all());
   const sIn = allSched.filter(r => r.direction === 'in');
   const sOut = allSched.filter(r => r.direction === 'out');
   const sumBy = (arr, k) => round2(arr.reduce((s, r) => s + num(r[k]), 0));
@@ -1491,7 +1518,7 @@ function dashboard () {
 
   // ---- 费用科目分布（成本结构） ----
   const byExpense = {};
-  for (const r of db.prepare('SELECT category, amount FROM expenses').all()) {
+  for (const r of db.prepare('SELECT category, amount FROM expenses' + tw()).all()) {
     const k = r.category || '未分类';
     byExpense[k] = round2((byExpense[k] || 0) + num(r.amount));
   }
@@ -2146,6 +2173,47 @@ function recordCounts () {
   }
   return out;
 }
+
+// ---------------- 租户守卫（多租户隔离的自动化审计） ----------------
+//
+// 多租户最容易出的错不是「写错条件」，是「**漏写条件**」：
+// 二十多张表、几百条 SQL，只要有任意一条 SELECT 忘了带 tenant_id，
+// 那条路径就会把别人的数据返回出去。而且它在单机模式下永远看不出来 ——
+// 因为单机时 scope() 返回空串，加不加都一样。
+//
+// 所以给「多租户 + 严格模式」加一道运行时检查：查业务表却没出现 tenant_id
+// 的语句直接抛错。用测试跑一遍，漏点自己会跳出来，不用靠人逐个看。
+//
+// 只在 PMS_TENANT_STRICT=1 时启用（生产不开，性能优先；审计和 CI 开）。
+const TENANT_TABLES = ['projects', 'contracts', 'contract_changes', 'schedules', 'payments',
+  'invoices', 'expenses', 'materials', 'partners', 'maintenance', 'attachments', 'logs',
+  'snapshots', 'trash'];
+
+function installTenantGuard () {
+  if (String(process.env.PMS_TENANT_STRICT || '') !== '1') return 0;
+  if (!tenantCtx.isMultiTenant()) return 0;
+  const orig = db.prepare.bind(db);
+  const violations = [];
+  db.prepare = function (sql) {
+    const s = String(sql || '');
+    // 只管「按行访问」：SELECT / UPDATE / DELETE。
+    // INSERT 靠 stampTenant 写入，不需要 tenant 条件；DDL 不涉及行。
+    const touchesRows = /\b(from|update)\b/i.test(s) || /^\s*delete\s+from/i.test(s);
+    if (touchesRows && !/tenant_id/i.test(s)) {
+      const hit = TENANT_TABLES.find(t => new RegExp(`\\b${t}\\b`, 'i').test(s));
+      if (hit) {
+        const brief = s.replace(/\s+/g, ' ').trim().slice(0, 140);
+        violations.push(brief);
+        throw new Error(`[租户守卫] 查询「${hit}」没有 tenant_id 条件，多租户下会跨租户读数据：${brief}`);
+      }
+    }
+    return orig(sql);
+  };
+  db.__tenantViolations = violations;
+  return 1;
+}
+
+installTenantGuard();
 
 module.exports = {
   // 驱动信息透出去：server.js 判断「是不是 PG」要用。
