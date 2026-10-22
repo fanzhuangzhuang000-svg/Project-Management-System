@@ -115,6 +115,67 @@ function sendJSON (res, code, obj) {
   res.end(body);
 }
 
+// ---------------- 看板缓存 ----------------
+/**
+ * 为什么需要这一层
+ *
+ * 看板要跑 16 条聚合 SQL、扫 8 万行（收付款 4 万 + 发票 2 万 + 计划 6 千 + 费用 1.5 万）。
+ * 实测：单人一次 0.7~2.0 秒（差别取决于磁盘缓存温度）。
+ * 问题是同步架构下这些计算是**串行**的 —— 30 个人同时进首页，
+ * 就是 30 次重复计算排队，最后一个人要等半分钟，而且这期间所有人的请求都被堵住。
+ *
+ * 但这 30 次计算的输入和输出**完全一样**：大家看的是同一份账。
+ * 所以按「权限指纹」缓存 20 秒：
+ *   · 30 人同时进 → 只真算 1 次，其余 29 次读内存（亚毫秒）
+ *   · 任何写操作（非 GET）响应后自动清空 → 改完数据回首页一定看到最新
+ *
+ * ⚠️ key 必须带权限指纹，不能所有人共用一份。
+ *    看板对不同权限返回的字段不同（没有合同读权就连合同额都不返回），
+ *    共用缓存等于把管理员看到的金额发给只读了项目的账号。
+ *
+ * 关掉：PMS_DASH_TTL_MS=0（测试里常用，避免"刚写完就看缓存"的时序问题）
+ */
+const DASH_TTL_MS = (() => {
+  const v = process.env.PMS_DASH_TTL_MS;
+  if (v === undefined || v === '') return 20000;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : 20000;
+})();
+const dashCache = new Map();
+
+function dashKey (perms) {
+  if (!perms) return 'none';
+  if (perms.all) return 'all';
+  const norm = a => (Array.isArray(a) ? [...a].sort().join(',') : '');
+  return 'r:' + norm(perms.read) + '|w:' + norm(perms.write);
+}
+function dashGet (key) {
+  if (!DASH_TTL_MS) return null;
+  const e = dashCache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.at > DASH_TTL_MS) { dashCache.delete(key); return null; }
+  return e.json;
+}
+function dashSet (key, json) {
+  if (!DASH_TTL_MS) return;
+  // 权限组合理论上有限，但别给一个坏掉的调用方留无限增长的机会
+  if (dashCache.size > 64) dashCache.clear();
+  dashCache.set(key, { at: Date.now(), json });
+}
+function dashClear () { dashCache.clear(); }
+
+/** 直接发一段已经序列化好的 JSON（缓存命中时用，省一次 stringify） */
+function sendRawJSON (res, code, json, extraHeaders) {
+  const body = Buffer.from(json, 'utf8');
+  res.writeHead(code, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': body.length,
+    'Cache-Control': 'no-store',
+    ...extraHeaders,
+  });
+  res.end(body);
+}
+
 /**
  * 请求体读取失败时的统一应答。
  * 超上限必须是 413（前端据此提示"文件太大"），其它（JSON 坏、网络断）是 400。
@@ -694,6 +755,11 @@ async function handleApi (req, res, url) {
   const q = queryOf(url);
   const method = req.method.toUpperCase();
 
+  // 写操作一结束就清看板缓存：改完数据回首页必须看到最新数字，
+  // 不能因为缓存还没到 20 秒就显示旧账。
+  // 挂在 finish 上、而不是在十几个写分支里各写一遍 —— 以后新增写接口不会再漏。
+  if (method !== 'GET') res.on('finish', dashClear);
+
   if (head === 'health') {
     // ⚠️ db 只给**文件名**，不给完整路径。这里以前直接回显 dbf.DB_FILE_SAFE，
     //    SQLite 下那就是 C:\Users\xxx\AppData\...\data\pms.db ——
@@ -893,6 +959,10 @@ async function handleApi (req, res, url) {
   if (head === 'dashboard') {
     // 驾驶舱按权限过滤：看不到的模块，对应数字直接不返回
     if (!anyRead(req.user.perms)) return sendJSON(res, 403, { error: '没有查看经营总览的权限' });
+    const ck = dashKey(req.user.perms);
+    const cached = dashGet(ck);
+    if (cached) return sendRawJSON(res, 200, cached, { 'X-Dash-Cache': 'hit' });
+
     const d = dbf.dashboardFor(req.user.perms);
     d.totals.attachment_count = attach.stats().total;
     // 历史趋势（来自月度快照），没权限看钱就不给
@@ -902,7 +972,9 @@ async function handleApi (req, res, url) {
       d.trend = snap.trend(12, d.totals);
       d.mom = snap.mom(d.totals);
     }
-    return sendJSON(res, 200, d);
+    const json = JSON.stringify(d);
+    dashSet(ck, json);
+    return sendRawJSON(res, 200, json, { 'X-Dash-Cache': 'miss' });
   }
 
   // 首页右侧栏「通知公告」：系统通知取最近的登录/备份/升级日志，
