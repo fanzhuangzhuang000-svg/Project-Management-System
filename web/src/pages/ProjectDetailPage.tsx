@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import {
   Button, Card, Pill, Empty, Skeleton, IconTile, Progress, Avatar,
+  BADGE_TONE,
 } from '@/components/ui/primitives'
 import { TrendLines } from '@/components/ui/charts'
 import { useApp } from '@/app-context'
@@ -206,14 +207,11 @@ function cell(table: string, f: any, r: any) {
   if (f.type === 'ref') return <span className="text-ink-700">{label || <span className="text-ink-300">—</span>}</span>
   if (f.type === 'money') return <span className={cn('tnum', f.danger && n0(v) > 0 ? 'font-semibold text-down' : 'text-ink-900')}>¥{fmtMoney(v)}</span>
   if (f.name === 'state') {
-    const tone = ({ 待收付: 'gray', 部分收付: 'orange', 已完成: 'green', 已逾期: 'red' } as any)[v] || 'gray'
+    const tone = BADGE_TONE[String(v)] || 'gray'
     return <Pill tone={tone} dot>{v || '—'}</Pill>
   }
   if (f.badge) {
-    const tone = ({
-      进行中: 'blue', 已完工: 'green', 草稿: 'gray', 执行中: 'blue', 已完成: 'green',
-      已开具: 'blue', 已认证: 'green', 已付: 'green', 未付: 'orange', 待处理: 'orange',
-    } as any)[v] || 'gray'
+    const tone = BADGE_TONE[String(v)] || 'gray'
     if (v === 'in' || v === 'out') {
       const isIn = v === 'in'
       return <Pill tone={isIn ? 'green' : 'red'} dot>{table === 'invoices' ? (isIn ? '进项' : '销项') : (isIn ? '收款' : '付款')}</Pill>

@@ -45,11 +45,11 @@ export function AppearanceSettingsCard () {
 
   const activeKey = pickWelcomeSlot()
   const preview = renderWelcome(form[activeKey] as string, form.company_name)
-  const isDaily = String((form as any).subtitle_mode ?? 'fixed') === 'daily'
+  const isDaily = String(form.subtitle_mode ?? 'fixed') === 'daily'
   // 实时预览里的副标题：跟随当前模式，daily 时显示今天会抽中的那条
   const subtitlePreview = isDaily ? pickDailyQuote() : String(form.welcome_subtitle || '')
   const dirty = settings
-    ? Object.keys(DEFAULT_SETTINGS).some(k => (form as any)[k] !== (settings as any)[k])
+    ? (Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]).some(k => form[k] !== settings[k])
     : false
 
   if (!loaded) {
@@ -123,12 +123,12 @@ export function AppearanceSettingsCard () {
                 {/* 模式单选：固定副标题 / 每日随机打工人语录 */}
                 <label className="flex cursor-pointer items-center gap-1.5 text-tiny text-ink-600">
                   <input type="radio" name="subtitle_mode" className="h-3.5 w-3.5 accent-[#3B82F6]"
-                    checked={!isDaily} onChange={() => set('subtitle_mode' as any, 'fixed')} />
+                    checked={!isDaily} onChange={() => set('subtitle_mode', 'fixed')} />
                   固定副标题
                 </label>
                 <label className="flex cursor-pointer items-center gap-1.5 text-tiny text-ink-600">
                   <input type="radio" name="subtitle_mode" className="h-3.5 w-3.5 accent-[#3B82F6]"
-                    checked={isDaily} onChange={() => set('subtitle_mode' as any, 'daily')} />
+                    checked={isDaily} onChange={() => set('subtitle_mode', 'daily')} />
                   每日随机打工人语录
                 </label>
               </div>
@@ -171,8 +171,8 @@ export function AppearanceSettingsCard () {
               <label className="flex flex-wrap items-center gap-2">
                 <span className="w-[92px] flex-none text-tiny text-ink-500">方式</span>
                 <select
-                  value={String((form as any).backup_remote ?? 'off')}
-                  onChange={e => set('backup_remote' as any, e.target.value)}
+                  value={String(form.backup_remote ?? 'off')}
+                  onChange={e => set('backup_remote', e.target.value)}
                   className="h-9 min-w-[150px] flex-1 rounded-tile bg-surface px-3 text-tiny text-ink-800 outline-none"
                 >
                   <option value="off">只留本地（默认）</option>
@@ -180,12 +180,12 @@ export function AppearanceSettingsCard () {
                   <option value="minio">上传到 MinIO（网络版）</option>
                 </select>
               </label>
-              {String((form as any).backup_remote) === 'share' && (
+              {form.backup_remote === 'share' && (
                 <label className="flex flex-wrap items-center gap-2">
                   <span className="w-[92px] flex-none text-tiny text-ink-500">共享目录</span>
                   <Input
-                    value={String((form as any).backup_share ?? '')}
-                    onChange={e => set('backup_share' as any, e.target.value)}
+                    value={String(form.backup_share ?? '')}
+                    onChange={e => set('backup_share', e.target.value)}
                     placeholder="\\\\NAS\\backup\\elv-pms  或  Z:\\备份"
                     className="!h-9 min-w-[180px] flex-1 text-tiny"
                   />
@@ -200,8 +200,8 @@ export function AppearanceSettingsCard () {
           <label className="block rounded-tile bg-subtle px-3.5 py-3">
             <span className="mb-2 block text-tiny font-medium text-ink-600">操作日志保留期</span>
             <select
-              value={String((form as any).log_retention_days ?? '365')}
-              onChange={e => set('log_retention_days' as any, e.target.value)}
+              value={String(form.log_retention_days ?? '365')}
+              onChange={e => set('log_retention_days', e.target.value)}
               className="h-9 w-full rounded-tile bg-surface px-3 text-tiny text-ink-800 outline-none"
             >
               <option value="90">保留 3 个月</option>

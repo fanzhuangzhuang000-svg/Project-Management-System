@@ -47,10 +47,10 @@ export default function UsersPage() {
     try {
       const [u, p] = await Promise.all([
         http.users(),
-        http.list('projects', { limit: 0 }).catch(() => ({ rows: [] as any[] })),
+        http.list('projects', { limit: 0 }).catch(() => ({ rows: [], total: 0 })),
       ])
       setUsers(u.rows); setGuard(u.loginGuard || [])
-      setProjects((p as any).rows || [])
+      setProjects(p.rows || [])
     } catch (e) { toast((e as Error).message, 'err'); setUsers([]) }
   }
   useEffect(() => { void load() }, [])
@@ -212,7 +212,7 @@ export default function UsersPage() {
       {confirmNode}
       {open && (
         <UserForm
-          user={editing} tables={meta?.order || []} sysKeys={meta && (meta as any).sysKeys}
+          user={editing} tables={meta?.order || []} sysKeys={meta?.sysKeys}
           onClose={() => setOpen(false)}
           onSaved={() => { void load(); void refreshDash() }}
         />

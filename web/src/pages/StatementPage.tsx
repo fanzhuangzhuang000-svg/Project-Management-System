@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, Printer, Download, FileCheck2 } from 'lucide-react'
-import { Button, Card, Pill, Empty, Skeleton } from '@/components/ui/primitives'
+import { BADGE_TONE, Button, Card, Pill, Empty, Skeleton } from '@/components/ui/primitives'
 import { useToast } from '@/components/ui/overlay'
 import { http } from '@/lib/api'
 import { cn, fmtMoney, fmtWan, n0, fmtDateCN } from '@/lib/utils'
@@ -143,7 +143,7 @@ export default function StatementPage() {
                   <td className={cn('text-right tnum', n0(x.remaining) > 0 ? 'font-semibold text-down' : 'text-ink-300')}>
                     ¥{fmtMoney(x.remaining)}
                   </td>
-                  <td><Pill tone={({ 已完成: 'green', 已逾期: 'red', 部分收付: 'orange' } as any)[x.state] || 'gray'} dot>{x.state}</Pill></td>
+                  <td><Pill tone={BADGE_TONE[String(x.state)] || 'gray'} dot>{x.state}</Pill></td>
                 </tr>
               ))}
             </tbody>

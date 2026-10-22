@@ -25,7 +25,7 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar perms={user.perms} dash={dash} badges={{ trash: trashCount, attachments: (dash?.totals as any)?.attachment_count }} />
+      <Sidebar perms={user.perms} dash={dash} badges={{ trash: trashCount, attachments: dash?.totals?.attachment_count }} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar

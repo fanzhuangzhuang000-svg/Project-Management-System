@@ -8,31 +8,19 @@ import {
 import {
   Button, Card, CardHeader, CardTitle, CardAction, Pill, Input, Select, Empty,
   Skeleton, Progress, Avatar, IconTile,
+  BADGE_TONE,
 } from '@/components/ui/primitives'
 import { TrendLines, DonutWithLegend, MiniBars } from '@/components/ui/charts'
 import { RecordForm } from '@/components/form/RecordForm'
 import { useConfirm, useToast } from '@/components/ui/overlay'
 import { useApp } from '@/app-context'
-import { http, api, type Row } from '@/lib/api'
+import { http, api, EMPTY_TOTALS, type Row } from '@/lib/api'
 import { cn, fmtMoney, fmtWan, n0, fmtInt } from '@/lib/utils'
 
 const TABLE_ICON: Record<string, any> = {
   projects: FolderKanban, contracts: ScrollText, contract_changes: FilePenLine,
   schedules: Calendar, payments: Wallet, invoices: ReceiptText, expenses: Coins,
   materials: Package, maintenance: Wrench, partners: Building2,
-}
-const BADGE_TONE: Record<string, 'blue' | 'purple' | 'orange' | 'green' | 'red' | 'gray' | 'cyan'> = {
-  进行中: 'blue', 未开工: 'gray', 已完工: 'green', 结算中: 'purple', 已结清: 'cyan', 已归档: 'gray',
-  草稿: 'gray', 执行中: 'blue', 已完成: 'green', 已终止: 'red',
-  已开具: 'blue', 已认证: 'green', 已作废: 'gray', 红冲: 'red',
-  待收付: 'gray', 部分收付: 'orange', 已逾期: 'red',
-  已付: 'green', 未付: 'orange', 有票: 'green', 无票: 'gray',
-  待采购: 'gray', 已下单: 'blue', 部分到货: 'orange', 已到货: 'green', 已安装: 'cyan', 已退场: 'gray',
-  待处理: 'orange', 处理中: 'blue', 已关闭: 'gray',
-  质保内: 'cyan', 质保外: 'orange', 已确认: 'green',
-  甲方: 'purple', 供应商: 'cyan', 分包商: 'orange', 劳务队: 'gray', 监理: 'gray', 设计院: 'gray',
-  收款: 'green', 付款: 'red', 收入合同: 'green', 支出合同: 'orange',
-  销项: 'green', 进项: 'orange', '销项（我开出）': 'green', '进项（收到）': 'orange',
 }
 const PAGE_SIZE = 20
 
@@ -190,7 +178,7 @@ export default function TablePage() {
   }
 
   /* ---------- 统计条（项目页用） ---------- */
-  const t = (dash?.totals || {}) as Record<string, number>
+  const t = dash?.totals ?? EMPTY_TOTALS
   const strip = useMemo(() => {
     switch (table) {
       case 'projects': return [
@@ -224,10 +212,10 @@ export default function TablePage() {
         { label: '动态毛利', value: fmtWan(t.actual_profit), unit: '万元', tone: 'green' as const, icon: Wallet },
       ]
       case 'schedules': return [
-        { label: '计划节点', value: fmtInt((dash?.schedules?.totals as any)?.node_count), unit: '个', tone: 'brand' as const, icon: Calendar },
-        { label: '逾期节点', value: fmtInt((dash?.schedules?.totals as any)?.overdue_count), unit: '个', tone: 'warm' as const, icon: AlertTriangle },
+        { label: '计划节点', value: fmtInt(dash?.schedules?.totals?.node_count), unit: '个', tone: 'brand' as const, icon: Calendar },
+        { label: '逾期节点', value: fmtInt(dash?.schedules?.totals?.overdue_count), unit: '个', tone: 'warm' as const, icon: AlertTriangle },
         { label: '7 天内到期', value: fmtInt(dash?.schedules?.buckets?.d7?.count), unit: '个', tone: 'purple' as const, icon: AlertTriangle },
-        { label: '计划收款', value: fmtWan((dash?.schedules?.totals as any)?.plan_in), unit: '万元', tone: 'green' as const, icon: Wallet },
+        { label: '计划收款', value: fmtWan(dash?.schedules?.totals?.plan_in), unit: '万元', tone: 'green' as const, icon: Wallet },
       ]
       default: return []
     }
@@ -543,7 +531,7 @@ function renderCell(table: string, f: any, r: Row, meta: any) {
   }
 
   if (f.name === 'state') {
-    const tone = ({ 待收付: 'gray', 部分收付: 'orange', 已完成: 'green', 已逾期: 'red' } as any)[v] || 'gray'
+    const tone = BADGE_TONE[String(v)] || 'gray'
     return <Pill tone={tone} dot>{v || '—'}</Pill>
   }
 

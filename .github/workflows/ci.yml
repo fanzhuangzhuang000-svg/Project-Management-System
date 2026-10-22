@@ -50,6 +50,27 @@ jobs:
         working-directory: web
         run: npm run build
 
+      # 光构建不校验，等于没校验。
+      #
+      # public/ 是入库的编译产物，线上跑的就是它。以前只有「构建成功」这一步，
+      # 于是「改了 web/src 但忘了提交重新构建的 public/」这种事故 CI 一句话不说：
+      # 类型检查过、套件全绿，可客户装上的还是几天前的界面。
+      # 这里把「产物与源码不一致」直接变成一个红灯。
+      #
+      # 之所以敢这么卡：vite 的产物体积和文件名 hash 都是确定的
+      # （实测同一份源码连跑两次 build，git status 一字不差）。
+      - name: 校验 public 产物与源码一致
+        shell: bash
+        run: |
+          changed="$(git status --porcelain public/)"
+          if [ -n "$changed" ]; then
+            echo "::error::前端产物与源码不一致：请在本地跑 npm run build，把 public/ 一起提交"
+            echo "$changed" | head -30
+            echo "（共 $(echo "$changed" | wc -l) 个文件有差异）"
+            exit 1
+          fi
+          echo "public/ 与 web/src 一致"
+
       - name: 跑验证
         env:
           PMS_CI: '1'

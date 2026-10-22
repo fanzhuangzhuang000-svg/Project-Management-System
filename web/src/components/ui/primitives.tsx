@@ -88,6 +88,29 @@ export function IconTile({
 
 /* ============================ 胶囊标签 ============================ */
 export type PillTone = 'blue' | 'purple' | 'orange' | 'green' | 'red' | 'gray' | 'cyan'
+
+/**
+ * 业务状态/枚举 → 标签颜色。**全站唯一一份**。
+ *
+ * 以前这张表在「台账列表」里写了全量版，而「项目详情」「对账单」各写一份残缺的
+ * 字面量 + `as any`：同一个「已逾期」，三个页面的颜色不一定一样；
+ * 新增一个状态时也总有人忘了改自己那份。现在统一到这里。
+ * 查不到的 key 落到调用处的 `|| 'gray'` 兜底，不会崩，但请补进来。
+ */
+export const BADGE_TONE: Record<string, PillTone> = {
+  进行中: 'blue', 未开工: 'gray', 已完工: 'green', 结算中: 'purple', 已结清: 'cyan', 已归档: 'gray',
+  草稿: 'gray', 执行中: 'blue', 已完成: 'green', 已终止: 'red',
+  已开具: 'blue', 已认证: 'green', 已作废: 'gray', 红冲: 'red',
+  待收付: 'gray', 部分收付: 'orange', 已逾期: 'red',
+  已付: 'green', 未付: 'orange', 有票: 'green', 无票: 'gray',
+  待采购: 'gray', 已下单: 'blue', 部分到货: 'orange', 已到货: 'green', 已安装: 'cyan', 已退场: 'gray',
+  待处理: 'orange', 处理中: 'blue', 已关闭: 'gray',
+  质保内: 'cyan', 质保外: 'orange', 已确认: 'green',
+  甲方: 'purple', 供应商: 'cyan', 分包商: 'orange', 劳务队: 'gray', 监理: 'gray', 设计院: 'gray',
+  收款: 'green', 付款: 'red', 收入合同: 'green', 支出合同: 'orange',
+  销项: 'green', 进项: 'orange', '销项（我开出）': 'green', '进项（收到）': 'orange',
+}
+
 const PILL_TONE: Record<PillTone, string> = {
   blue: 'bg-blue-50 text-blue-600',
   purple: 'bg-violet-50 text-violet-600',

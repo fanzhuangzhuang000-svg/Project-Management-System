@@ -177,7 +177,14 @@ export interface AppSettings {
   welcome_subtitle: string
   /** 副标题模式：fixed=固定副标题，daily=每日随机打工人语录 */
   subtitle_mode: string
+  /** 授权码。普通账号读到的永远是空串（后端会脱敏），别拿它判断有没有授权 */
   license_key: string
+  /** 操作日志保留天数，字符串。'0' = 永久保留 */
+  log_retention_days: string
+  /** 备份异地存放：off=只留本地，share=局域网共享目录，minio=传到 MinIO */
+  backup_remote: string
+  /** 共享目录路径，形如 \\NAS\backup\elv-pms。普通账号读到空串 */
+  backup_share: string
 }
 export interface User {
   id: number
@@ -236,6 +243,8 @@ export interface Meta {
   port: number
   lan: string[]
   trashKeepDays: number
+  /** 系统权限项清单（账号编辑页按它渲染勾选框，别在前端写死） */
+  sysKeys: string[]
   upload: { maxMB: number; accept: string; ocrExt: string[]; attachDir: string }
 }
 
@@ -262,12 +271,113 @@ export interface Reminder {
   href: string
 }
 
+/**
+ * 首页汇总数字（/api/dashboard 的 totals）。
+ *
+ * ⚠️ 这里必须逐个字段列出来，**不能**写成 `Record<string, number>`。
+ * 写成索引签名等于放弃了类型检查：前端写 `t.collect_rat`（少个 e）TS 一句话都不说，
+ * 运行时就是 undefined，页面上那个数字直接空白，而且不报错 —— 最难查的一类问题。
+ * 后端 tools/upgrade-test.js 里有一份 CORE 字段清单守着「字段别被误删」，
+ * 这里守着「前端别读错名字」，两头夹住。
+ *
+ * 带 `| null` 的字段是「当前账号没有对应模块的读权限」时后端显式置空的，
+ * 不是缺失。展示层一律走 `fmtWan(...)` 之类的空值兜底。
+ */
+export interface DashTotals {
+  project_count: number
+  project_active: number
+  project_done: number
+  contract_count: number | null
+  contract_in: number | null
+  contract_out: number | null
+  contract_in_ex: number | null
+  contract_out_ex: number | null
+  contract_in_base: number
+  contract_out_base: number
+  change_in: number
+  change_out: number
+  change_count: number
+  paid_in: number | null
+  paid_out: number | null
+  receivable: number | null
+  payable: number | null
+  payable_contract: number | null
+  payable_expense: number
+  gross_profit: number | null
+  gross_rate: number | null
+  inv_out: number
+  inv_in: number
+  material_amount: number
+  material_count: number
+  cost: number
+  cost_ex: number
+  cost_unpaid: number
+  expense_count: number
+  maint_count: number
+  maint_open: number
+  maint_cost: number
+  payment_count: number
+  invoice_count: number
+  partner_count: number
+  actual_profit: number
+  actual_rate: number
+  cost_over: number | null
+  cost_used_rate: number | null
+  collect_rate: number | null
+  uninvoiced_out: number | null
+  inv_out_paid: number
+  inv_in_paid: number
+  linked_count: number
+  inv_out_unpaid: number
+  inv_in_unpaid: number
+  paid_in_no_inv: number
+  paid_out_no_inv: number
+  inv_cover_rate: number
+  /** 由 server.js 在返回前补上的附件总数（不在 db.dashboard() 里） */
+  attachment_count?: number
+}
+
+/** 权限不足时的空汇总，避免每处都写 `?? 0` */
+export const EMPTY_TOTALS = {
+  project_count: 0, project_active: 0, project_done: 0,
+  contract_count: 0, contract_in: 0, contract_out: 0, contract_in_ex: 0, contract_out_ex: 0,
+  contract_in_base: 0, contract_out_base: 0, change_in: 0, change_out: 0, change_count: 0,
+  paid_in: 0, paid_out: 0, receivable: 0, payable: 0, payable_contract: 0, payable_expense: 0,
+  gross_profit: 0, gross_rate: 0, inv_out: 0, inv_in: 0, material_amount: 0, material_count: 0,
+  cost: 0, cost_ex: 0, cost_unpaid: 0, expense_count: 0, maint_count: 0, maint_open: 0,
+  maint_cost: 0, payment_count: 0, invoice_count: 0, partner_count: 0,
+  actual_profit: 0, actual_rate: 0, cost_over: 0, cost_used_rate: 0, collect_rate: 0,
+  uninvoiced_out: 0, inv_out_paid: 0, inv_in_paid: 0, linked_count: 0, inv_out_unpaid: 0,
+  inv_in_unpaid: 0, paid_in_no_inv: 0, paid_out_no_inv: 0, inv_cover_rate: 0,
+  attachment_count: 0,
+} as const satisfies DashTotals
+
+/** 收付款计划的节点汇总（Dashboard.schedules.totals） */
+export interface SchedTotals {
+  node_count: number
+  plan_in: number
+  plan_out: number
+  paid_in: number
+  paid_out: number
+  overdue_in: number
+  overdue_out: number
+  overdue_count: number
+  remaining_in: number
+  remaining_out: number
+}
+
+export const EMPTY_SCHED_TOTALS = {
+  node_count: 0, plan_in: 0, plan_out: 0, paid_in: 0, paid_out: 0,
+  overdue_in: 0, overdue_out: 0, overdue_count: 0, remaining_in: 0, remaining_out: 0,
+} as const satisfies SchedTotals
+
 export interface Dashboard {
   today: string
   this_month: string
-  month_in: number
-  month_out: number
-  totals: Record<string, number>
+  /** 本月收付款。没有 payments 读权限时后端给 null（前端别当成 0 显示） */
+  month_in: number | null
+  month_out: number | null
+  totals: DashTotals
   by_status: Record<string, number>
   by_category: Record<string, { count: number; contract_in: number; gross_profit: number }>
   by_expense: Record<string, number>
@@ -276,7 +386,7 @@ export interface Dashboard {
   overdue: Row[]
   reminders: Reminder[]
   schedules: {
-    totals: Record<string, number>
+    totals: SchedTotals
     overdue: Row[]
     upcoming: { ym: string; plan_in: number; plan_out: number; unpaid_in: number; unpaid_out: number }[]
     month: { ym: string; unpaid_in: number } | null
@@ -365,7 +475,7 @@ export const http = {
     return api<ListResult>(`/api/list/${table}${qs ? '?' + qs : ''}`)
   },
   get: (table: string, id: number | string) => api<Row>(`/api/get/${table}/${id}`),
-  save: (table: string, body: Record<string, any>) => post<{ ok: boolean; id: number; row: Row }>(`/api/save/${table}`, body),
+  save: (table: string, body: Record<string, any>) => post<{ ok: boolean; id: number; row: Row; /** 后端顺带做的事，比如「已自动创建主合同」 */ note?: string }>(`/api/save/${table}`, body),
   remove: (table: string, id: number | string, body: Record<string, any> = {}) => post(`/api/delete/${table}/${id}`, body),
   batchDelete: (table: string, ids: number[], body: Record<string, any> = {}) => post('/api/batch-delete', { table, ids, ...body }),
 

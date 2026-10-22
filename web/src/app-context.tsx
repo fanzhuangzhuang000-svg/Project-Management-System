@@ -34,6 +34,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   welcome_subtitle: '以下是您团队今日的工作概览',
   subtitle_mode: 'fixed',
   license_key: '',
+  log_retention_days: '365',
+  backup_remote: 'off',
+  backup_share: '',
 }
 
 const Ctx = createContext<AppState>(null as any)

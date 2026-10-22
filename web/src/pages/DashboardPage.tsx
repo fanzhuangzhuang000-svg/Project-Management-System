@@ -8,7 +8,7 @@ import { Card, Empty, Skeleton } from '@/components/ui/primitives'
 import { MetricCard } from '@/components/dashboard/MetricCard'
 import { BriefingCard } from '@/components/dashboard/BriefingCard'
 import { useApp, DEFAULT_SETTINGS } from '@/app-context'
-import { http, type Dashboard as Dash } from '@/lib/api'
+import { http, EMPTY_TOTALS, type Dashboard as Dash } from '@/lib/api'
 import { cn, fmtWan, n0, delta as calcDelta, renderWelcome, pickWelcomeSlot, resolveSubtitle } from '@/lib/utils'
 
 /**
@@ -26,14 +26,14 @@ export default function DashboardPage() {
   useEffect(() => { void refreshDash() }, [refreshDash])
 
   const d = dash
-  const t = (d?.totals || {}) as Record<string, number>
+  const t = d?.totals ?? EMPTY_TOTALS
   const mom = d?.mom
 
   /* ---------- Banner 欢迎语（沿用系统设置模板） ---------- */
   const S = settings || DEFAULT_SETTINGS
   const welcomeText = renderWelcome(String(S[pickWelcomeSlot()] ?? ''), S.company_name)
   // 副标题：fixed=固定文案，daily=每日随机打工人语录（仅替换文本，排版样式不变）
-  const subtitleText = resolveSubtitle((S as any).subtitle_mode, S.welcome_subtitle)
+  const subtitleText = resolveSubtitle(S.subtitle_mode, S.welcome_subtitle)
 
   // 数据统计卡的「更新时间」= 当前时刻（HH:MM）。以前这里写死 08:30，几点打开都显示 08:30。
   const now = new Date()

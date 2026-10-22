@@ -122,7 +122,7 @@ export function RecordForm({
       if (!record?.id && linkAttachIds?.length) payload.__attach_ids = linkAttachIds
       const r = await http.save(table, payload)
       // 后端可能顺便做了别的事（比如项目金额自动建了主合同），要说一声
-      const note = (r as any)?.note
+      const note = r.note
       toast(note || (record?.id ? '已保存' : '已新增'), 'ok', note ? 5000 : undefined)
       onSaved(r.id, !record?.id)
       onClose()

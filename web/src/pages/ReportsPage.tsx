@@ -3,7 +3,7 @@ import { ChartPie, TrendingUp, Activity, Wallet, Coins, AlertTriangle } from 'lu
 import { Card, CardHeader, CardTitle, CardAction, Empty, Skeleton, Pill, IconTile, Progress } from '@/components/ui/primitives'
 import { TrendLines, DonutWithLegend, AreaTrend, MiniBars } from '@/components/ui/charts'
 import { useApp } from '@/app-context'
-import { http } from '@/lib/api'
+import { http, EMPTY_TOTALS } from '@/lib/api'
 import { cn, fmtWan, n0, fmtInt } from '@/lib/utils'
 
 const EXPENSE_COLORS = ['#3B82F6', '#8B5CF6', '#F97316', '#10B981', '#06B6D4', '#EF4444', '#A78BFA', '#94A3B8', '#FBBF24']
@@ -17,7 +17,7 @@ export default function ReportsPage() {
   useEffect(() => { void refreshDash() }, [refreshDash])
 
   const d = dash
-  const t = (d?.totals || {}) as Record<string, number>
+  const t = d?.totals ?? EMPTY_TOTALS
 
   const flow = useMemo(() => (d?.monthly || []).slice(range === '6' ? -6 : -12).map(m => ({
     label: String(m.ym).slice(2),

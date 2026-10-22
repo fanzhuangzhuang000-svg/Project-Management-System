@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { http, ApiError, type AiConfig, type AiMessage, type AiProposal, type AiIngestResult } from '@/lib/api'
-import type { Dashboard } from '@/lib/api'
+import { EMPTY_TOTALS, type Dashboard, type DashTotals } from '@/lib/api'
 import { cn, fmtWan, n0 } from '@/lib/utils'
 import { Button, Pill } from '@/components/ui/primitives'
 import { useToast } from '@/components/ui/overlay'
@@ -186,7 +186,7 @@ export function AiAssistant({ dash }: { dash?: Dashboard | null }) {
   }, [])
 
   const reminders = dash?.reminders || []
-  const localTips = useMemo(() => buildTips(dash?.totals || {}, reminders, dash), [dash, reminders])
+  const localTips = useMemo(() => buildTips(dash?.totals ?? EMPTY_TOTALS, reminders, dash), [dash, reminders])
 
   /** 首次展开时拉一次配置 */
   useEffect(() => {
@@ -1071,7 +1071,7 @@ function renderBlock (b: Block, i: number) {
 
 interface Tip { title: string; body: string; tone?: 'danger' | 'warn' | 'info'; to?: string }
 
-function buildTips (t: Record<string, number>, reminders: Dashboard['reminders'], dash?: Dashboard | null): Tip[] {
+function buildTips (t: DashTotals, reminders: Dashboard['reminders'], dash?: Dashboard | null): Tip[] {
   const out: Tip[] = []
   const receivable = n0(t.receivable)
   const paidIn = n0(t.paid_in)

@@ -1,4 +1,5 @@
 import * as React from 'react'
+import type { TileTone } from './primitives'
 import {
   Area, AreaChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -27,7 +28,7 @@ function DarkTip({ active, payload, label, unit = '', formatter }: any) {
 /* ============================ 迷你趋势面积图（指标卡右下角） ============================ */
 export function Sparkline({
   data, dataKey = 'v', tone = 'brand', height = 30,
-}: { data: any[]; dataKey?: string; tone?: 'brand' | 'purple' | 'warm' | 'cyan' | 'green'; height?: number }) {
+}: { data: any[]; dataKey?: string; /** 与 IconTile 共用一套色名，两边别各写一遍 */ tone?: TileTone; height?: number }) {
   const gid = React.useId().replace(/[:]/g, '')
   const COLORS = {
     brand: ['#3B82F6', '#6366F1'],

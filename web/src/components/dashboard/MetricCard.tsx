@@ -55,7 +55,7 @@ export function MetricCard({
 
       {/* 右下角迷你趋势面积图（高 30px） */}
       <div className="pointer-events-none absolute -bottom-0.5 right-0 left-0">
-        <Sparkline data={spark || []} tone={(sparkTone || tone) as any} height={30} />
+        <Sparkline data={spark || []} tone={sparkTone || tone} height={30} />
       </div>
     </Card>
   )
