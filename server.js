@@ -2422,7 +2422,7 @@ server.listen(PORT, HOST, () => {
 // 照抄这句话会让人以为 PG 也在用 synchronous=FULL（其实那是 SQLite 的 PRAGMA）。
 console.log('  写入模式:   ' + (dbf.dialect === 'postgres'
     ? 'PostgreSQL（服务端 WAL + 崩溃恢复由数据库负责）'
-    : 'WAL + synchronous=FULL（掉电/强杀不丢数据）'));
+    : 'WAL + synchronous=NORMAL（强杀不丢数据；整机掉电最多丢最后几笔）'));
   if (adminInit.created) {
     console.log('');
     console.log('  ┌────────────────────────────────────────────────────┐');
@@ -2525,6 +2525,7 @@ function shutdown (sig) {
   shuttingDown = true;
   console.log(`\n收到 ${sig}，正在保存数据…`);
   try { server.close(); } catch { /* 忽略 */ }
+  try { logmod.flushLogs(); } catch { /* 忽略 */ }   // 批量日志退出前落盘（最多丢 250ms 内的）
   try { dbf.closeDb(); } catch (e) { console.error('关闭数据库出错：' + e.message); }
   console.log('数据已保存，服务停止。');
   process.exit(0);

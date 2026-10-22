@@ -32,6 +32,53 @@ function createTable () {
 }
 
 /** 记录一条日志（永远不抛错，日志失败不能影响业务） */
+// ── 批量异步写入 ──────────────────────────────────────────────
+// 以前每条日志一次独立 INSERT（一次落盘提交）。压测里每个写请求都要付这笔钱：
+// 录一笔收付款 = 业务 INSERT + 日志 INSERT 两次提交，日志占了一半的写开销。
+// 改成内存队列，攒够条数或定时统一在一个事务里提交：
+//  · 租户标在【入队时】打（stampTenant 读的是当前请求的 AsyncLocalStorage），
+//    攒队期间上下文早就换了 —— 冲刷时再打必然串租户。
+//  · 读侧（list）先同步冲刷，用户录完账立刻打开日志页能看到自己那条。
+//  · 冲刷失败（多半是写锁竞争）塞回队头下个周期重试，超上限丢最旧并告警。
+const LOG_FLUSH_MS = 250;
+const LOG_FLUSH_N = 32;
+const LOG_QUEUE_MAX = 20000;
+let logQueue = [];
+let logTimer = null;
+
+function scheduleFlush () {
+  if (logTimer) return;
+  logTimer = setTimeout(() => { logTimer = null; flushLogs(); }, LOG_FLUSH_MS);
+  if (logTimer.unref) logTimer.unref();
+}
+
+/** 把队列里的日志在一个事务里落盘。可随时同步调用（读前冲刷/退出前冲刷）。 */
+function flushLogs () {
+  if (logTimer) { clearTimeout(logTimer); logTimer = null; }
+  if (!logQueue.length) return;
+  const batch = logQueue;
+  logQueue = [];
+  const stmt = db.prepare(`INSERT INTO logs (at, operator, action, table_name, record_id, label, summary, detail, tenant_id)
+    VALUES (?,?,?,?,?,?,?,?,?)`);
+  try {
+    db.exec('BEGIN');
+    try {
+      for (const row of batch) stmt.run(...row);
+      db.exec('COMMIT');
+    } catch (e) {
+      try { db.exec('ROLLBACK'); } catch { /* 忽略 */ }
+      throw e;
+    }
+  } catch {
+    // 批量失败：整批塞回队头，下个周期重试（busy_timeout 8 秒，基本都能等到锁）
+    logQueue = batch.concat(logQueue);
+    if (logQueue.length > LOG_QUEUE_MAX) {
+      logQueue = logQueue.slice(-LOG_QUEUE_MAX);
+      console.warn(`[日志] 队列积压超过 ${LOG_QUEUE_MAX} 条，丢弃最旧的日志`);
+    }
+  }
+}
+
 function log (entry) {
   try {
     // record_id 必须落在 JS 安全整数范围内。
@@ -42,8 +89,8 @@ function log (entry) {
     const rid = Number(entry.record_id);
     // 多租户：写入时打上当前租户标。漏了的话租户 2 的操作日志全归租户 1 ——
     // 租户 2 查不到自己的操作，租户 1 却能看到别人的，两头都错。
-    db.prepare(`INSERT INTO logs (at, operator, action, table_name, record_id, label, summary, detail, tenant_id)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    // 注意必须在入队这一刻取（AsyncLocalStorage 还在当前请求里）。
+    logQueue.push([
       nowISO(),
       entry.operator || null,
       entry.action || 'other',
@@ -53,9 +100,14 @@ function log (entry) {
       entry.summary || null,
       entry.detail ? JSON.stringify(entry.detail).slice(0, 4000) : null,
       tenantCtx.stampTenant(),
-    );
+    ]);
+    if (logQueue.length >= LOG_FLUSH_N) flushLogs();
+    else scheduleFlush();
   } catch { /* 忽略 */ }
 }
+
+// 进程正常退出前冲一把（定时器是 unref 的，事件循环空了会触发 beforeExit）
+try { process.on('beforeExit', flushLogs); } catch { /* 某些嵌入环境没有 process */ }
 
 /** 比较修改前后，列出变化的字段 */
 function diffFields (table, before, after) {
@@ -90,6 +142,7 @@ function fmt (v) {
 }
 
 function list (opts = {}) {
+  flushLogs();   // 读前冲刷：用户录完账立刻打开日志页，必须能看到自己那条
   const where = [];
   const params = [];
   // 多租户：日志按租户隔离（单机模式 scope 返回空串，SQL 不变）
@@ -127,6 +180,7 @@ function list (opts = {}) {
 }
 
 function stats () {
+  flushLogs();   // 读前冲刷：统计数字要包含刚入队还没落盘的
   const r = db.prepare(`SELECT COUNT(*) n,
       SUM(CASE WHEN action IN ('delete','batch_delete') THEN 1 ELSE 0 END) dels,
       MAX(at) last
@@ -146,8 +200,9 @@ function stats () {
 function purge (days = 365) {
   const d = Number(days);
   if (!Number.isFinite(d) || d <= 0) return 0;   // 0 / 负数 / 非法值 = 永久保留
+  flushLogs();   // 先落盘再删，否则队列里的日志躲过这次清理、下次冲刷又冒出来
   const cut = daysAgoISO(d);   // at 字段是本地时间串，不能用 UTC 比
   return Number(db.prepare('DELETE FROM logs WHERE at < ?').run(cut).changes);
 }
 
-module.exports = { createTable, log, list, stats, purge, diffFields, summarize, ACTION_LABEL };
+module.exports = { createTable, log, list, stats, purge, diffFields, summarize, ACTION_LABEL, flushLogs };

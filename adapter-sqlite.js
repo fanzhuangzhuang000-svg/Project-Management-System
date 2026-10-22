@@ -21,8 +21,15 @@ function open (opts = {}) {
   // 这些 PRAGMA 是 SQLite 专属的连接设置，放在适配器里，
   // 业务层就不用关心「换个数据库要不要改这几行」。
   db.exec('PRAGMA busy_timeout = 8000;');
-  // 数据量很小（几 MB），用 FULL 换取掉电/强杀也不丢数据
-  db.exec('PRAGMA synchronous = FULL;');
+  // WAL 下的官方推荐搭配是 synchronous=NORMAL：
+  //  · NORMAL：应用崩溃/被强杀**不丢数据**（WAL 里都有），只有整机掉电/系统崩溃
+  //    可能丢最后几笔已提交事务 —— 换来每次提交不再强制 fsync（Windows 上一次
+  //    fsync 几十毫秒，写路径里最贵的一步）。
+  //  · FULL：掉电也不丢，代价是每个事务都 fsync。以前用 FULL 是因为单机几 MB
+  //    数据感觉不出来；压测（4 万收付款、30 并发混合负载）里它成了写延迟大头。
+  //  · 业务取舍：项目款项记录丢了最后一两笔可以从界面重录（有回收站/日志），
+  //    而「每次录账都卡几百毫秒」是所有人都感知的。选 NORMAL。
+  db.exec('PRAGMA synchronous = NORMAL;');
   db.exec('PRAGMA foreign_keys = ON;');
 
   /**
