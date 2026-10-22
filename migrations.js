@@ -249,6 +249,32 @@ const MIGRATIONS = [
       for (const id of ids) stmt.run(id);
     },
   },
+
+  {
+    version: 7,
+    name: '回收站补 tenant_id（快照一直是失败的）',
+    up (db) {
+      // ── 为什么需要这一版 ──
+      // trash 表由 trash.js 的 createTable() 建，建的时候**没有 tenant_id**；
+      // 而 v4 的多租户迁移只遍历业务表，清单里没有 trash。
+      // 可 trash.push() 的 INSERT 里写着 tenant_id —— 于是每次删除都：
+      //   1) 快照抛 "table trash has no column named tenant_id"
+      //   2) server.js 的 catch 只打一行日志，接着照删
+      // 结果：数据删了，回收站里一条都没有，「30 天内可一键还原」全程是空话。
+      // 这一版把列补上；索引一起补，否则多租户模式下列表查询会全表扫。
+      const isPg = db.dialect === 'postgres';
+      const exists = isPg
+        ? !!db.prepare(`SELECT table_name FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = 'trash'`).get()
+        : !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='trash'").get();
+      if (!exists) return;                       // 新库由 createTable() 直接建全，这里不用管
+      const cols = db.columns('trash');
+      if (!cols.includes('tenant_id')) {
+        db.exec('ALTER TABLE "trash" ADD COLUMN tenant_id BIGINT DEFAULT 1;');
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS idx_trash_tenant ON trash(tenant_id);');
+    },
+  },
 ];
 
 const TABLE = 'schema_migrations';

@@ -22,6 +22,10 @@ const DB_FILE_SAFE = driver.DB_FILE_SAFE;
 const DB_EXISTED = driver.DB_EXISTED;
 const db = driver.db;
 
+/** 上一次 init() 的迁移结果（版本 / 失败原因 / 备份文件），给接口和界面用 */
+let LAST_MIGRATION = { version: 0, error: null, backup: null };
+const migrationInfo = () => ({ ...LAST_MIGRATION });
+
 /** 把 WAL 内容合并回主库（PG 模式下是空操作，服务端自己会 checkpoint） */
 function checkpoint (mode = 'PASSIVE') {
   try {
@@ -575,7 +579,10 @@ function dependents (table, id) {
       invoices: count('SELECT COUNT(*) n FROM invoices WHERE contract_id = ?'),
       expenses: count('SELECT COUNT(*) n FROM expenses WHERE contract_id = ?'),
       materials: count('SELECT COUNT(*) n FROM materials WHERE contract_id = ?'),
-      contracts_changes: count('SELECT COUNT(*) n FROM contract_changes WHERE contract_id = ?'),
+      // ⚠️ 键名必须用**真实表名** contract_changes（没有 s）。
+      //    前端把这里的键直接拼进「将同时处理：xxx 2」的确认框，写成 contracts_changes
+      //    就查不到表定义，标签退化成英文键，界面上出现「contracts_changes 1」。
+      contract_changes: count('SELECT COUNT(*) n FROM contract_changes WHERE contract_id = ?'),
     };
   }
   if (table === 'partners') {
@@ -591,7 +598,7 @@ function dependents (table, id) {
     // 删发票不删钱，只是解除"对应发票"的关联
     return { payments: count('SELECT COUNT(*) n FROM payments WHERE invoice_id = ?') };
   }
-  if (table === 'contracts_changes') {
+  if (table === 'contract_changes') {
     return {};
   }
   return {};
@@ -600,6 +607,13 @@ function dependents (table, id) {
 /** 单表内删除一条（带级联）——必须在已开启的事务里调用。返回实际删掉的行数 */
 function deleteOneInTx (table, id) {
   if (table === 'projects') {
+    // contract_changes 原来不在这个清单里：删项目时合同被删了，变更记录却留下来，
+    // 变成指向已删除合同的孤儿行（还带着 project_id，列表里继续显示）。
+    // ⚠️ 不能只按 project_id 删：变更记录的 project_id 是选填的（界面上「选好合同后
+    //    自动带出」），只关联了合同、没填项目的那部分会漏掉。所以按合同也兜一遍 ——
+    //    必须在下面删 contracts 之前执行。
+    db.prepare(`DELETE FROM contract_changes
+      WHERE project_id = ? OR contract_id IN (SELECT id FROM contracts WHERE project_id = ?)`).run(id, id);
     for (const t of ['materials', 'invoices', 'payments', 'expenses', 'maintenance', 'schedules', 'contracts']) {
       db.prepare(`DELETE FROM ${t} WHERE project_id = ?`).run(id);
     }
@@ -609,8 +623,13 @@ function deleteOneInTx (table, id) {
       db.prepare(`UPDATE ${t} SET contract_id = NULL WHERE contract_id = ?`).run(id);
     }
     db.prepare('DELETE FROM schedules WHERE contract_id = ?').run(id);
-    // 变更记录是独立事实：删合同不删变更，只解除关联（还原时再接回去）
-    db.prepare('UPDATE contract_changes SET contract_id = NULL WHERE contract_id = ?').run(id);
+    // 变更记录跟着合同一起删。原来这里写的是
+    //   UPDATE contract_changes SET contract_id = NULL
+    // 可 schema 里 contract_id 是 NOT NULL（界面上也是必填）——
+    // 于是「删除带变更记录的合同」直接抛 constraint failed，
+    // 接口返回 400，用户怎么点都删不掉这份合同。
+    // 变更脱离合同本来也没有意义；删掉的行由回收站快照保存，还原时原样写回。
+    db.prepare('DELETE FROM contract_changes WHERE contract_id = ?').run(id);
   }
   if (table === 'partners') {
     db.prepare('UPDATE projects SET client_id = NULL WHERE client_id = ?').run(id);
@@ -1943,7 +1962,15 @@ function sweepOrphans () {
 function dbfNow () {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
-  return `-`;
+  // ⚠️ 这个名字曾经被写死成 "-"，于是每次升级前的备份都叫 pre-upgrade--.db。
+  //    而 SQLite 的 VACUUM INTO **不会覆盖同名文件**：第二次升级直接报
+  //    "output file already exists" → migrate() 判定「升级前备份失败」→ 中止迁移。
+  //    更糟的是服务照常启动，只是 schema 停在旧版本，控制台一行 console.error
+  //    谁也不会看到 —— 用户的库就这么永久卡在旧结构上。
+  //    带毫秒：同一秒内连做两次备份也不会撞名。
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_`
+    + `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+    + `_${String(d.getMilliseconds()).padStart(3, '0')}`;
 }
 
 function init () {
@@ -1963,6 +1990,9 @@ function init () {
     log: (m) => console.log("  [迁移] " + m),
   });
   if (mig.error) console.error("  [迁移] ✗ " + mig.error);
+  // 迁移结果留一份给接口用：schema 停在旧版本时，界面必须看得见。
+  // 只写 console.error 等于写给空气看 —— 桌面版的用户根本不看控制台窗口。
+  LAST_MIGRATION = { version: mig.to, error: mig.error || null, backup: mig.backup || null };
   // 只在「全新的数据库文件」上写示例数据。
   // 老库即使一张业务表都没有，也绝不自动重播种——否则"数据被清空"会被伪装成"正常初始化"，
   // 真正的问题就被掩盖了（这一点踩过坑）。
@@ -2000,7 +2030,7 @@ module.exports = {
   decorateInvoices, decorateContracts, invoiceReconcile, invoicePaidMap, backfillInvoiceLinks, changeMap,
   scheduleAllocation, decorateSchedules, scheduleStats, generatePlan, sweepOrphans, recordCounts,
   projectChildTables,
-  num, round2, nowISO, today, daysAgoISO, fmtLocal,
+  num, round2, nowISO, today, daysAgoISO, fmtLocal, migrationInfo,
   getSettings, saveSettings, DEFAULT_SETTINGS, SETTING_KEYS,
 };
 

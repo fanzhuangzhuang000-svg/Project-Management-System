@@ -15,10 +15,19 @@ const CASCADE_DELETE = {
   projects: ['contract_changes', 'materials', 'invoices', 'payments', 'expenses', 'maintenance', 'schedules', 'contracts'],
 };
 // 删除主记录时，这些子表只是解除关联（记录保留），还原时要把关联接回去
+// ⚠️ 这里的 key 必须**就是真实表名** —— 下面 capture() 直接把它拼进 SQL：
+//    `SELECT id FROM ${child} WHERE ${field} = ?`。
+//    原来合同那一行写成了 contracts_changes（表叫 contract_changes，没有 s），
+//    于是删任何一份合同时 capture() 都抛 no such table，快照整段失败；
+//    而 server.js 那个 catch 只打一行日志就继续删 —— 合同删掉了、回收站里却没有，
+//    「30 天内可一键还原」对这最常用的一张表根本不成立。实测：删完回收站 0 条。
+//
+// ⚠️ contract_changes 不在这张表里：它的 contract_id 是 NOT NULL，
+//    没法"只解除关联"。删合同时变更记录跟着删，快照按**整行**保存（见 capture）。
 const UNLINK_FIELD = {
   contracts: {
     payments: 'contract_id', invoices: 'contract_id', materials: 'contract_id',
-    expenses: 'contract_id', contracts_changes: 'contract_id',
+    expenses: 'contract_id',
   },
   partners: {
     projects: 'client_id', contracts: 'partner_id', invoices: 'partner_id',
@@ -32,6 +41,12 @@ const KEEP_DAYS = 30;
 const safeParse = (s, dflt) => { try { return JSON.parse(s); } catch { return dflt; } };
 
 function createTable () {
+  // ⚠️ tenant_id 必须在这里建出来。push() 的 INSERT 里有这一列，
+  //    而多租户迁移（migrations v4）的表清单里**没有 trash** ——
+  //    也就是说这个列从来没被建过，push() 每次都报
+  //    "table trash has no column named tenant_id"：
+  //    删除照样执行，快照一条也存不进去，「30 天内可还原」全程是句空话。
+  //    老库靠 migrations v7 补列，新库靠这里。
   db.exec(`CREATE TABLE IF NOT EXISTS trash (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     table_name TEXT,
@@ -40,9 +55,11 @@ function createTable () {
     row_count INTEGER DEFAULT 0,
     payload TEXT,
     operator TEXT,
-    deleted_at TEXT
+    deleted_at TEXT,
+    tenant_id BIGINT DEFAULT 1
   );`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_trash_time ON trash(deleted_at);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_trash_tenant ON trash(tenant_id);');
 }
 
 /**
@@ -72,18 +89,30 @@ function capture (table, ids) {
   for (const id of ids) {
     const self = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
     if (!self) continue;
+    // ⚠️ 父记录先入数组。restore() 是按数组顺序 INSERT 的 ——
+    //    子表排在父表前面的话，一旦以后给 schema 加上外键约束，还原就会全部失败。
+    //    现在没有 FOREIGN KEY 才侥幸没事，别把这个侥幸写成设计。
+    addRow(table, self);
     for (const child of CASCADE_DELETE[table] || []) {
       for (const r of db.prepare(`SELECT * FROM ${child} WHERE project_id = ?`).all(id)) addRow(child, r);
     }
+    if (table === 'projects') {
+      // 变更记录的 project_id 是选填的：只按 project_id 收集会漏掉「只关联了合同」
+      // 的那部分 —— 它们会被 deleteOneInTx 一起删掉，却没进快照，还原时就丢了。
+      for (const r of db.prepare(`SELECT * FROM contract_changes
+        WHERE contract_id IN (SELECT id FROM contracts WHERE project_id = ?)`).all(id)) addRow('contract_changes', r);
+    }
     if (table === 'contracts') {
       for (const r of db.prepare('SELECT * FROM schedules WHERE contract_id = ?').all(id)) addRow('schedules', r);
+      // 变更记录会被一起删掉（contract_id 是 NOT NULL，没法只解关联），
+      // 所以必须按整行存进快照，还原时才回得来。
+      for (const r of db.prepare('SELECT * FROM contract_changes WHERE contract_id = ?').all(id)) addRow('contract_changes', r);
     }
     for (const [child, field] of Object.entries(UNLINK_FIELD[table] || {})) {
       for (const r of db.prepare(`SELECT id FROM ${child} WHERE ${field} = ?`).all(id)) {
         unlinked.push({ table: child, id: r.id, field, ref: id });
       }
     }
-    addRow(table, self);
   }
 
   // 收集这些记录身上的附件（含项目级附件）

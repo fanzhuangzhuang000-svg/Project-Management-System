@@ -648,6 +648,9 @@ async function handleApi (req, res, url) {
       sysKeys: auth.SYS_KEYS,
       settings: settingsFor(req),
       license: licenseNow(),
+      // 数据库结构升级失败（比如升级前备份撞名）时，库里会停在旧版本。
+      // 这件事必须让用户看见：老版本的字段可能已经不够用了，继续录入会出错。
+      dbMigration: dbf.migrationInfo(),
     });
   }
 
@@ -1599,6 +1602,7 @@ async function handleApi (req, res, url) {
 
     // 先做快照存进回收站（30 天内可还原）
     let trashId = null;
+    let trashError = null;
     try {
       // ⚠️ 这里原来是 recordLabel(a, ...)，但 /api/batch-delete 的路径里没有第二段，
       //    `a` 是 undefined —— 而 recordLabel 拿不到表定义就退回 `#12`。
@@ -1607,7 +1611,13 @@ async function handleApi (req, res, url) {
       const label = ids.map(id => recordLabel(table, dbf.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id))).filter(Boolean).join('、').slice(0, 80);
       const payload = trash.capture(table, ids);
       trashId = trash.push(table, ids, payload, operatorOf(req), label);
-    } catch (e) { console.log('[回收站] 快照失败：' + e.message); }
+    } catch (e) {
+      // ⚠️ 不能只打一行日志就照删：快照失败 = 这批数据删掉之后**再也还原不了**，
+      //    而界面上写的是「删除的记录会进回收站，30 天内可以还原」。
+      //    必须把失败原因带回前端，让用户至少知道自己放弃了退路。
+      trashError = e.message;
+      console.log('[回收站] 快照失败，本次删除无法还原：' + e.message);
+    }
 
     // 附件必须在删业务数据之前处理：子记录删掉后就找不到挂在它们身上的附件了
     const keep = !!body.keepAttachments;
@@ -1623,7 +1633,7 @@ async function handleApi (req, res, url) {
     if (r.error) return sendJSON(res, 400, r);
     writeLog(req, 'batch_delete', table, null, `${ids.length} 条`, keep ? `保留附件 ${removedFiles} 个` : `含附件 ${removedFiles} 个`);
     console.log(`[批量删除] ${TABLES[table].label}：${r.deleted} 条，${keep ? '保留' : '删除'}附件 ${removedFiles} 个`);
-    return sendJSON(res, 200, { ...r, removedFiles, keptAttachments: keep, trashId });
+    return sendJSON(res, 200, { ...r, removedFiles, keptAttachments: keep, trashId, trashError });
   }
 
   if (head === 'get' && a && b) {
@@ -1743,10 +1753,15 @@ async function handleApi (req, res, url) {
 
     // 先做快照存进回收站（30 天内可还原）
     let trashId = null;
+    let trashError = null;
     try {
       const payload = trash.capture(a, [numId]);
       trashId = trash.push(a, [numId], payload, operatorOf(req), label);
-    } catch (e) { console.log('[回收站] 快照失败：' + e.message); }
+    } catch (e) {
+      // 同批量删除：快照失败要说出来，不能删完还宣称"能还原"
+      trashError = e.message;
+      console.log('[回收站] 快照失败，本次删除无法还原：' + e.message);
+    }
 
     let removedAttachments = 0;
     if (keep) {
@@ -1757,7 +1772,7 @@ async function handleApi (req, res, url) {
     const r = blockers.length ? dbf.deleteCascade(a, b) : dbf.deleteRow(a, b);
     if (r.error) return sendJSON(res, 400, r);
     writeLog(req, 'delete', a, numId, label, keep ? '保留附件' : `含附件 ${removedAttachments} 个`);
-    return sendJSON(res, 200, { ok: true, removedAttachments, keptAttachments: keep, trashId });
+    return sendJSON(res, 200, { ok: true, removedAttachments, keptAttachments: keep, trashId, trashError });
   }
 
   // ---------------- 回收站 ----------------

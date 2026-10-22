@@ -169,8 +169,13 @@ function remove (id) {
 function update (id, patch) {
   const keys = Object.keys(patch);
   if (!keys.length) return;
+  // ⚠️ undefined 不能直接绑给 SQLite（node:sqlite 会抛
+  //    "Provided value cannot be bound to SQLite parameter N"）。
+  //    识别结果里的 engine / confidence 这类字段依赖具体引擎，某个后端没填
+  //    就会让**整条识别结果**作废（ocr_status 直接变 failed），明明文本已经拿到了。
+  //    统一转成 NULL：字段缺失就是"没这个信息"，不该连累整条记录。
   db.prepare(`UPDATE attachments SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
-    .run(...keys.map(k => patch[k]), nowISO(), parseInt(id, 10));
+    .run(...keys.map(k => patch[k] === undefined ? null : patch[k]), nowISO(), parseInt(id, 10));
 }
 
 // ---------------- 查询 ----------------
