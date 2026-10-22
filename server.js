@@ -426,7 +426,17 @@ function guardSys (req, res, key, label) {
 // ---------------- 操作人 / 记录名（日志用） ----------------
 /** 取客户端 IP（去掉 IPv6 映射前缀），用于登录限速与日志 */
 function clientIp (req) {
-  const raw = String(req.headers['x-forwarded-for'] || (req.socket && req.socket.remoteAddress) || '').split(',')[0].trim();
+  const direct = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
+  // 只有**明确部署在反向代理后面**时才认 X-Forwarded-For。
+  //
+  // 默认不认：这个头是客户端自己发的，谁都能随便填。无条件相信它的后果是
+  //   · 登录限速可以靠每次换一个假 IP 绕过（爆破密码不再被锁）
+  //   · 操作日志里的 IP 可以随意伪造，出事查不到人
+  // 需要 Nginx / 网关转发时，启动前设 TRUST_PROXY=1 即可。
+  const trust = process.env.TRUST_PROXY === '1';
+  const raw = trust
+    ? (String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || direct)
+    : direct;
   return raw ? raw.replace(/^::ffff:/, '') : '本机';
 }
 function operatorOf (req) {
@@ -1808,6 +1818,14 @@ function lanAddresses () {
 }
 
 const server = http.createServer((req, res) => {
+  // 统一的安全响应头：放在最前面，所有分支（含 400/401）都能带上。
+  //   nosniff —— 上传的 .txt/.json 被直接访问时，浏览器不会把它猜成 HTML 执行；
+  //   SAMEORIGIN —— 禁止别的站点用 iframe 嵌套本系统做点击劫持（同源 iframe 仍可用）；
+  //   Referrer-Policy —— 跳转到外部链接时不泄露内网地址。
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'same-origin');
+
   let url;
   try { url = new URL(req.url, 'http://localhost'); } catch { res.writeHead(400); return res.end('Bad Request'); }
 

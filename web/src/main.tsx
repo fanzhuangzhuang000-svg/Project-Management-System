@@ -4,6 +4,7 @@ import { HashRouter } from 'react-router-dom'
 import { AppProvider, useApp } from './app-context'
 import { ToastProvider } from './components/ui/overlay'
 import { AppShell } from './components/layout/AppShell'
+import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import './index.css'
 
 // 主题在首帧渲染前就位（深浅切换记在 localStorage，下次进来自动带）
@@ -99,12 +100,15 @@ function Root() {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <HashRouter>
-      <ToastProvider>
-        <AppProvider>
-          <Root />
-        </AppProvider>
-      </ToastProvider>
-    </HashRouter>
+    {/* 放在最外层：任何页面渲染抛异常都只影响内容区，不会整站白屏 */}
+    <ErrorBoundary>
+      <HashRouter>
+        <ToastProvider>
+          <AppProvider>
+            <Root />
+          </AppProvider>
+        </ToastProvider>
+      </HashRouter>
+    </ErrorBoundary>
   </React.StrictMode>,
 )

@@ -243,6 +243,13 @@ function parseCookies (req) {
   return out;
 }
 
+/**
+ * 会话滑动续期的节流表：token → 上次写库的时间戳。
+ * 只存在内存里，进程重启后清空（重启后每个会话第一次访问多写一次，无所谓）。
+ */
+const renewedAt = new Map();
+const RENEW_EVERY_MS = 10 * 60 * 1000;
+
 /** 从请求里取当前用户（校验会话有效性 + 账号是否被停用） */
 function fromRequest (req) {
   const token = parseCookies(req)[COOKIE];
@@ -251,22 +258,37 @@ function fromRequest (req) {
   if (!s) return null;
   if (s.expires_at && s.expires_at < nowISO()) {
     db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    renewedAt.delete(token);
     return null;
   }
   const u = db.prepare('SELECT * FROM users WHERE id = ?').get(s.user_id);
   if (!u || u.status !== '启用') {
     db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    renewedAt.delete(token);
     return null;
   }
-  // 滑动续期：每次访问把有效期往后推
-  const exp = new Date(Date.now() + SESSION_DAYS * 86400000).toISOString().slice(0, 19).replace('T', ' ');
-  db.prepare('UPDATE sessions SET last_seen = ?, expires_at = ? WHERE token = ?').run(nowISO(), exp, token);
+  // 滑动续期：把有效期往后推。
+  //
+  // ⚠️ 不要每个请求都写一次库。这条 UPDATE 在 WAL + synchronous=FULL 下是一次
+  // 真正的落盘（fsync），而一个页面打开要打十几个接口 —— 等于每次点开菜单都要
+  // 写十几次磁盘。机械盘、网络盘、多人同时用时这个开销会直接体现在响应时间上。
+  // 会话有效期是 30 天，10 分钟内的重复访问没必要重复续期。
+  const now = Date.now();
+  const last = renewedAt.get(token) || 0;
+  if (now - last > RENEW_EVERY_MS) {
+    const exp = new Date(now + SESSION_DAYS * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+    db.prepare('UPDATE sessions SET last_seen = ?, expires_at = ? WHERE token = ?').run(nowISO(), exp, token);
+    renewedAt.set(token, now);
+  }
   return { ...u, token, perms: parsePerms(u) };
 }
 
 function destroySession (req) {
   const token = parseCookies(req)[COOKIE];
-  if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+  if (token) {
+    db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    renewedAt.delete(token);
+  }
 }
 
 function destroyUserSessions (userId) {
