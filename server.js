@@ -48,7 +48,7 @@ const APP_NAME = '弱电智能化工程项目管理系统';
  * ⚠️ 兜底常量必须和 package.json 的 version 一致 —— 由
  *    tools/version-consistency-test.js 断言，对不上 CI 直接红。
  */
-const VERSION_FALLBACK = '1.1.1';
+const VERSION_FALLBACK = '2.0.0';
 function detectVersion () {
   for (const f of [path.join(__dirname, 'package.json'), path.join(__dirname, '..', 'package.json')]) {
     try {
