@@ -62,6 +62,26 @@ function runNode (script, args = [], timeout = 900000) {
 }
 
 /**
+ * 安装包能不能读？
+ *
+ * 某些环境会拒绝 file-read（安全中心规则、沙箱），三个安装包验证都要先把
+ * exe 复制到临时目录 —— 读不到就必红。那是**环境前提不成立**，不是产品缺陷。
+ * 更糟的是这类拦截会直接杀掉子进程，套件里那句 `SKIP: ...` 根本传不出来，
+ * 所以只能在这里先探一下，提前走「未执行」通道。
+ */
+function installerReadBlocked () {
+  try {
+    const p = require('./installer-path.js').findInstaller();
+    if (!p) return null;
+    fs.closeSync(fs.openSync(p, 'r'));   // 只验可读性，不读内容
+    return null;
+  } catch (e) {
+    const code = String((e && e.code) || '');
+    return /EPERM|EACCES/.test(code) ? code : null;
+  }
+}
+
+/**
  * CI 模式下不跑的套件 —— 每一个都必须写明**确切原因**。
  *
  * 别把这份清单当"不重要所以跳过"：它们在本地是有意义的（装机、PG+MinIO 集成、
@@ -390,6 +410,7 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     }),
   );
   const exeStale = exeForVerify && fs.existsSync(exeForVerify) && fs.statSync(exeForVerify).mtimeMs < srcMtime;
+  const installerBlocked = installerReadBlocked();   // 只探一次，下面三处跳过共用
 
   if (!exeForVerify || !fs.existsSync(exeForVerify)) {
     skip('常规验证（装→跑→卸）', '还没打安装包；先跑 npm run dist 或 node tools/build-installer.js');
@@ -405,6 +426,11 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     skip('常规验证（装→跑→卸）', '缺识别素材 tools/fixtures/contract.pdf（跑 node tools/fixtures/make-fixtures.js 生成）');
     skip('装机验证', '缺识别素材 tools/fixtures/contract.pdf（装机验证要走完整 OCR 链路）');
     skip('覆盖安装（服务在跑时覆盖）', '缺识别素材 tools/fixtures/contract.pdf');
+  } else if (installerBlocked) {
+    const why = `当前环境不允许读取安装包（${installerBlocked}）—— 请在普通终端逐条跑 tools/verify-installer.js / verify-installed.js / verify-overwrite.js`;
+    skip('常规验证（装→跑→卸）', why);
+    skip('装机验证', why);
+    skip('覆盖安装（服务在跑时覆盖）', why);
   } else {
     {
       const r = runNode(path.join('tools', 'verify-installer.js'));
