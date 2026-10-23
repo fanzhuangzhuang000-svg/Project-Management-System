@@ -1154,7 +1154,58 @@ function invoiceReconcile (projectId) {
  * @param {number[]} ids 项目 id 数组
  * @returns {Record<number, object>} projectId -> 统计对象
  */
-function projectStatsMany (ids) {
+/**
+ * 费用一次性分组：看板三处用量的唯一来源。
+ *
+ * 以前 expenses（1.5 万行）在一次看板里被扫三遍：
+ *   1) 项目统计的「实际成本」（按项目分组）
+ *   2) 「无合同的未付费用」（按项目分组，是 1) 的子集，等于白扫一遍）
+ *   3) 首页的科目构成 by_expense（把每行 amount 搬进 JS 再累加）
+ * 现在一条 GROUP BY project_id, category 全算完：
+ *   · 分组行数是「项目 × 科目」（几百到几千），传输量比 1.5 万行小一个量级
+ *   · 1) 2) 的 Map 形状与原来完全一致，projectStatsMany 直接复用
+ *
+ * ⚠️ 不要按 project_id IN (...) 过滤：原来的 by_expense 统计的是**全表**
+ *    （包括没挂项目的费用），加了过滤会少算钱。
+ */
+function expenseRollup () {
+  const rows = db.prepare(`SELECT project_id AS pid, category,
+      COALESCE(SUM(amount),0) AS amt,
+      COALESCE(SUM(amount_ex_tax),0) AS amt_ex,
+      COALESCE(SUM(CASE WHEN status='未付' THEN amount ELSE 0 END),0) AS unpaid,
+      COALESCE(SUM(CASE WHEN status='未付' AND (contract_id IS NULL OR contract_id = 0)
+                        THEN amount ELSE 0 END),0) AS unpaid_nc,
+      COUNT(*) AS cnt
+    FROM expenses${tw()} GROUP BY project_id, category`).all();
+
+  const E = new Map(), PE = new Map(), byCat = new Map();
+  for (const r of rows) {
+    const pid = r.pid === null ? null : Number(r.pid);
+
+    const e = E.get(pid) || { pid, cost: 0, cost_ex: 0, unpaid: 0, cnt: 0 };
+    e.cost += num(r.amt);
+    e.cost_ex += num(r.amt_ex);
+    e.unpaid += num(r.unpaid);
+    e.cnt += Number(r.cnt) || 0;
+    E.set(pid, e);
+
+    const nc = num(r.unpaid_nc);
+    if (nc > 0) {
+      const p = PE.get(pid) || { pid, v: 0 };
+      p.v += nc;
+      PE.set(pid, p);
+    }
+
+    const k = r.category || '未分类';
+    byCat.set(k, (byCat.get(k) || 0) + num(r.amt));
+  }
+
+  const byExpense = {};
+  for (const [k, v] of byCat) byExpense[k] = round2(v);
+  return { E, PE, byExpense };
+}
+
+function projectStatsMany (ids, pre) {
   const list = [...new Set((ids || []).map(x => parseInt(x, 10)).filter(Number.isFinite))];
   const out = {};
   if (!list.length) return out;
@@ -1195,7 +1246,9 @@ function projectStatsMany (ids) {
   const M = groupOf(`SELECT project_id AS pid, COALESCE(SUM(amount),0) AS amt, COUNT(*) AS cnt
     FROM materials WHERE project_id IN (${ph})${tw('', true)} GROUP BY project_id`);
 
-  const E = groupOf(`SELECT project_id AS pid,
+  // 费用：两处口径（项目成本、无合同的未付费用）来自同一张表，允许调用方
+  // 预先算好一次传进来（看板还要第三处 by_expense，见 expenseRollup）。
+  const E = (pre && pre.E) || groupOf(`SELECT project_id AS pid,
       COALESCE(SUM(amount),0) AS cost,
       COALESCE(SUM(amount_ex_tax),0) AS cost_ex,
       COALESCE(SUM(CASE WHEN status='未付' THEN amount ELSE 0 END),0) AS unpaid,
@@ -1208,7 +1261,7 @@ function projectStatsMany (ids) {
     FROM maintenance WHERE project_id IN (${ph})${tw('', true)} GROUP BY project_id`);
 
   // 无合同的未付费用（应付账款里单独一档）
-  const PE = groupOf(`SELECT project_id AS pid, COALESCE(SUM(amount),0) AS v FROM expenses
+  const PE = (pre && pre.PE) || groupOf(`SELECT project_id AS pid, COALESCE(SUM(amount),0) AS v FROM expenses
     WHERE project_id IN (${ph})${tw('', true)} AND status='未付' AND (contract_id IS NULL OR contract_id = 0)
     GROUP BY project_id`);
 
@@ -1301,7 +1354,9 @@ function dashboard () {
   for (const r of db.prepare(`SELECT id, name FROM partners${tw()}`).all()) clientMap[r.id] = r.name;
 
   // 一次算完所有项目的统计（批量版固定 8 条 SQL，不再每个项目跑一遍）
-  const statMap = projectStatsMany(projects.map(p => p.id));
+  // 费用只扫一遍：项目成本 / 无合同未付 / 科目构成 三处共用（见 expenseRollup）
+  const exp = expenseRollup();
+  const statMap = projectStatsMany(projects.map(p => p.id), exp);
   const perProject = projects.map(p => ({ ...p, client_name: clientMap[p.client_id] || '', ...(statMap[p.id] || {}) }));
   const sum = k => round2(perProject.reduce((s, r) => s + num(r[k]), 0));
 
@@ -1595,11 +1650,7 @@ function dashboard () {
     .slice(0, 12);
 
   // ---- 费用科目分布（成本结构） ----
-  const byExpense = {};
-  for (const r of db.prepare('SELECT category, amount FROM expenses' + tw()).all()) {
-    const k = r.category || '未分类';
-    byExpense[k] = round2((byExpense[k] || 0) + num(r.amount));
-  }
+  const byExpense = exp.byExpense;
 
   // ⚠️ 列表类字段一律截断后再返回。
   //

@@ -343,6 +343,33 @@ const MIGRATIONS = [
       idx('idx_expenses_agg', 'expenses', ['project_id', 'amount', 'amount_ex_tax', 'tenant_id']);
     },
   },
+  {
+    version: 10,
+    name: '月度流水表达式覆盖索引（免临时 B 树排序）',
+    up (db) {
+      // 看板的 12 个月流水是 `GROUP BY substr(pay_date,1,7) ORDER BY ym DESC LIMIT 12`。
+      // v9 的 idx_payments_ym 只能让扫描免回表，分组与排序还得靠 TEMP B-TREE
+      // —— 4 万行进临时表再排，约 9ms，是单条 SQL 里最贵的一条。
+      //
+      // 用「表达式索引」把 substr 的结果本身变成索引键，扫描顺序就是分组顺序，
+      // GROUP BY 和 ORDER BY 都省掉。但**光有表达式还不够**：
+      //   · 只建 (substr(...))          → 仍然要回表取 direction/amount，40ms，更慢
+      //   · 加上 direction, amount      → WHERE 里的 pay_date 不在索引里，仍要回表
+      //   · 再加上 pay_date（本版）     → SCAN USING COVERING INDEX，1.8ms
+      // 这三种都实测过，别想当然地只建表达式那一列。
+      //
+      // ⚠️ PG 要求表达式多包一层括号，且不能和普通列混在同一个括号里。
+      // ⚠️ 先查目录再建（PG 下失败语句会毒化整个事务，见 v8 注释）。
+      const exists = db.dialect === 'postgres'
+        ? !!db.prepare(`SELECT table_name FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = 'payments'`).get()
+        : !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='payments'").get();
+      if (!exists) return;
+      const ym = db.dialect === 'postgres' ? '(substr(pay_date,1,7))' : 'substr(pay_date,1,7)';
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_payments_ym_expr
+        ON payments(${ym}, pay_date, direction, amount, tenant_id);`);
+    },
+  },
 ];
 
 const TABLE = 'schema_migrations';
