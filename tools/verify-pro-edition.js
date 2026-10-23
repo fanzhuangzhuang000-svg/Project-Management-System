@@ -73,9 +73,17 @@ function cleanup () {
   await sleep(1200);
 
   // ── 2. 准备一个干净的 PG 库 ──
+  // PG 工具（createdb/dropdb）的查找顺序：
+  //   ① PG_TEST_BIN 环境变量   ② zip 免安装版 C:\pgsql-17\pgsql\bin
+  //   ③ 官方安装版 C:\Program Files\PostgreSQL\17\bin
+  // 谁真的存在用谁 —— 两种安装形态都得能跑。
+  const pgBin = (process.env.PG_TEST_BIN
+    || ['C:/pgsql-17/pgsql/bin', 'C:/Program Files/PostgreSQL/17/bin']
+      .find(p => fs.existsSync(path.join(p, 'createdb.exe')))
+    || 'C:/Program Files/PostgreSQL/17/bin').replace(/\//g, '\\\\');
   const proDb = PG_URL.split('/').pop();
   spawnSync('powershell.exe', ['-NoProfile', '-Command',
-    `$env:PGPASSWORD=''; & 'C:\\Program Files\\PostgreSQL\\17\\bin\\dropdb.exe' -h 127.0.0.1 -p 5433 -U postgres --if-exists ${proDb}; & 'C:\\Program Files\\PostgreSQL\\17\\bin\\createdb.exe' -h 127.0.0.1 -p 5433 -U postgres ${proDb}`],
+    `$env:PGPASSWORD=''; & '${pgBin}\\\\dropdb.exe' -h 127.0.0.1 -p 5433 -U postgres --if-exists ${proDb}; & '${pgBin}\\\\createdb.exe' -h 127.0.0.1 -p 5433 -U postgres ${proDb}`],
   { windowsHide: true, stdio: 'ignore' });
 
   // ── 3. 用 compose 里那套环境变量启动应用 ──

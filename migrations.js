@@ -290,12 +290,16 @@ const MIGRATIONS = [
       // 现在新写入已经被 logs.js 拦住了（只存安全整数），这一版负责把
       // 已经中招的库治好：这些记录的编号本来也没有意义（对应的记录早就不存在）。
       const MAX = Number.MAX_SAFE_INTEGER;
-      try {
-        db.exec(`UPDATE logs SET record_id = NULL WHERE record_id > ${MAX} OR record_id < -${MAX};`);
-      } catch (e) {
-        // 表不存在（极早期库）之类的情况不该让迁移失败
-        if (!/no such table|does not exist/i.test(String(e && e.message))) throw e;
-      }
+      // ⚠️ 不能「先执行再吞 no such table」——SQLite 下失败语句不毒化事务，
+      // PG 下一旦失败，整个事务 aborted，后面写 schema_migrations 必报
+      // "current transaction is aborted"，且真错误被吞掉无从排查。
+      // 必须先查目录确认表存在，不存在就整体跳过（新库的 logs 由
+      // logs.js 在迁移之后建，天然没有脏数据要治）。
+      const hasLogs = db.dialect === 'postgres'
+        ? !!db.prepare(`SELECT table_name FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = 'logs'`).get()
+        : !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='logs'").get();
+      if (hasLogs) db.exec(`UPDATE logs SET record_id = NULL WHERE record_id > ${MAX} OR record_id < -${MAX};`);
     },
   },
   {
@@ -316,9 +320,15 @@ const MIGRATIONS = [
       //     tenant_id 过滤在扫描时顺带完成，同样零回表
       // 代价：payments 多 3 个索引，每次插入多写 3 棵 B 树（微秒级），
       // 换看板重算从 209ms 降下来 —— 读是 28% 流量，写只有 6%。
+      // ⚠️ 先查目录再建，不能「先执行再吞 does not exist」——
+      // PG 下失败语句会毒化整个迁移事务（见 v8 的注释）。
+      const tableExists = (t) => db.dialect === 'postgres'
+        ? !!db.prepare(`SELECT table_name FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = ?`).get(t)
+        : !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(t);
       const idx = (name, table, cols) => {
-        try { db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON "${table}"(${cols.join(', ')});`) }
-        catch (e) { if (!/no such table|does not exist/i.test(String(e && e.message))) throw e; }
+        if (!tableExists(table)) return;
+        db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON "${table}"(${cols.join(', ')});`);
       };
       // 收付款：按项目+方向合计（scheduleAllocation / 项目收支 / 冲抵）
       idx('idx_payments_agg', 'payments', ['project_id', 'direction', 'amount', 'tenant_id']);
