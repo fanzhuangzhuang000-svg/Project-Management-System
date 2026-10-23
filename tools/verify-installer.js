@@ -150,7 +150,15 @@ async function forceRmDir (dir, tries = 8) {
   // 清干净上一次的痕迹
   killInstalled();
   const cleared = await forceRmDir(DIR);
-  fs.copyFileSync(SETUP_SRC, SETUP);
+  // 复制失败 = 这台机器不允许读安装包（沙箱/杀软拦截），是环境前提不成立，
+  // 按 run-all 的约定报 SKIP 而不是把环境问题算成产品缺陷。
+  try { fs.copyFileSync(SETUP_SRC, SETUP); } catch (e) {
+    if (/EPERM|EACCES/.test(String(e.code || e.message))) {
+      console.log(`SKIP: 当前环境不允许读取安装包（${e.code || 'EPERM'}），请在普通终端运行本套件`);
+      process.exit(0);
+    }
+    throw e;
+  }
   T('已复制到工作区外运行（绕开沙箱限制）', fs.existsSync(SETUP));
   // 只是提示，不计入结论：连续跑两次时上一次的服务可能还占着目录，安装会直接覆盖，不影响结果
   console.log(`  ${cleared ? '✓' : '·'} 测试目录${cleared ? '已清空' : '有上次残留（会被本次安装覆盖，不影响结论）'}  — ${DIR}`);

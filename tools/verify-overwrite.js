@@ -80,7 +80,13 @@ function dumpChildLog (logFile) {
   killInstalled();
   await sleep(1200);
   try { fs.rmSync(DIR, { recursive: true, force: true }) } catch { /* 忽略 */ }
-  fs.copyFileSync(SETUP_SRC, SETUP);
+  try { fs.copyFileSync(SETUP_SRC, SETUP); } catch (e) {
+    if (/EPERM|EACCES/.test(String(e.code || e.message))) {
+      console.log(`SKIP: 当前环境不允许读取安装包（${e.code || 'EPERM'}），请在普通终端运行本套件`);
+      process.exit(0);
+    }
+    throw e;
+  }
 
   console.log('[1] 第一次安装');
   const i1 = run(SETUP, ['/silent', '/dir=' + DIR, '/no-desktop', '/no-autostart']);

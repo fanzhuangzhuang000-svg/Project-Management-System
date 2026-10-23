@@ -96,7 +96,13 @@ const killInstalled = () => ps(`Get-Process node -ErrorAction SilentlyContinue |
   killInstalled();
   await sleep(1500);
   try { fs.rmSync(DIR, { recursive: true, force: true }) } catch { /* 忽略 */ }
-  fs.copyFileSync(SETUP, TMP);
+  try { fs.copyFileSync(SETUP, TMP); } catch (e) {
+    if (/EPERM|EACCES/.test(String(e.code || e.message))) {
+      console.log(`SKIP: 当前环境不允许读取安装包（${e.code || 'EPERM'}），请在普通终端运行本套件`);
+      process.exit(0);
+    }
+    throw e;
+  }
 
   console.log('[1] 安装');
   check('安装成功', run(TMP, ['/silent', '/dir=' + DIR, '/no-desktop', '/no-autostart']).code === 0);
