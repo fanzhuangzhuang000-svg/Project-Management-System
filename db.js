@@ -867,6 +867,49 @@ function scheduleAllocation () {
   return out;
 }
 
+/**
+ * 与 scheduleAllocation 完全同一套冲抵，只是节点行由调用方提供。
+ *
+ * 为什么需要这个：看板本来要拿两份 schedules —— 一份给冲抵（只取 4 列、SQL 里排序），
+ * 一份给统计（宽行 + 两个 JOIN）。同一张表扫两遍，6000 行就要多花 ~7ms。
+ * 现在把统计用的那批行直接喂进来，SQL 只跑一次（payments 汇总那条照旧）。
+ *
+ * ⚠️ 排序必须与 `ORDER BY project_id, direction, due_date, id` 逐字等价：
+ *    SQLite 升序时 NULL 排最前，字符串按二进制（ASCII 下等同 JS 的 < 比较）。
+ *    排序一旦偏了，冲抵消到的节点就换了，整个计划/账龄区块全错 ——
+ *    所以基线工具里对 alloc 做的是**全量逐项**比对，不是抽查。
+ */
+function allocationFromRows (nodes) {
+  const pool = {};
+  for (const p of db.prepare(`SELECT project_id, direction, SUM(amount) AS total
+    FROM payments${tw()} GROUP BY project_id, direction`).all()) {
+    pool[`${p.project_id}|${p.direction}`] = num(p.total);
+  }
+  const cmpNullFirst = (x, y) => {
+    if (x === y) return 0;
+    if (x === null || x === undefined) return -1;
+    if (y === null || y === undefined) return 1;
+    return x < y ? -1 : 1;
+  };
+  const ordered = nodes.slice().sort((a, b) =>
+    cmpNullFirst(a.project_id, b.project_id) ||
+    cmpNullFirst(a.direction, b.direction) ||
+    cmpNullFirst(a.due_date, b.due_date) ||
+    cmpNullFirst(a.id, b.id));
+
+  const out = new Map();
+  let curKey = null, remain = 0;
+  for (const n of ordered) {
+    const k = `${n.project_id}|${n.direction}`;
+    if (k !== curKey) { curKey = k; remain = pool[k] || 0; }
+    const amt = num(n.amount);
+    const got = Math.max(0, Math.min(remain, amt));
+    remain -= got;
+    out.set(n.id, round2(got));
+  }
+  return out;
+}
+
 function scheduleState (row, paid, todayStr) {
   const amount = num(row.amount);
   const remaining = round2(amount - paid);
@@ -877,8 +920,10 @@ function scheduleState (row, paid, todayStr) {
 }
 
 /** 给节点行补上已收付/未收付/状态（列表、项目详情、看板都用它） */
-function decorateSchedules (rows) {
-  const alloc = scheduleAllocation();
+function decorateSchedules (rows, allocIn) {
+  // 传了冲抵结果就复用：看板一次要同时出统计和冲抵，没必要为此再扫一遍 schedules。
+  // 不传时行为与以前完全一致。
+  const alloc = allocIn || scheduleAllocation();
   const t = today();
   for (const r of rows) {
     const paid = alloc.get(r.id) || 0;
@@ -1348,11 +1393,24 @@ function dashboard () {
     WHERE direction='out' AND pay_date >= ? AND pay_date < ?${tw('', true)}`).get(monthStart, monthEnd).v;
 
   // ---- 收付款计划：节点冲抵、逾期预警、未来 6 个月排期 ----
-  const allSched = decorateSchedules(db.prepare(`SELECT s.*, p.name AS project_name, p.code AS project_code,
-      c.name AS contract_name
-    FROM schedules s
-    LEFT JOIN projects p ON p.id = s.project_id
-    LEFT JOIN contracts c ON c.id = s.contract_id${tw('s.')}`).all());
+  // 只取 7 个窄列：s.* 里除了这些，唯一多出来的 project_code 全文件零消费；
+  // 两个 LEFT JOIN 只是为了名字，而名字只在截断后的十几行里用得到 ——
+  // 改成"扫完再补名字"，6000 行不用每行回表两次。
+  const schedRows = db.prepare(`SELECT s.id, s.project_id, s.contract_id, s.direction,
+      s.phase, s.due_date, s.amount
+    FROM schedules s${tw('s.')}`).all();
+  {
+    // 名字补全。LEFT JOIN 未命中时是 NULL，这里也必须是 null ——
+    // undefined 会被 JSON.stringify 直接丢掉，前端与基线比对都会判定成"字段消失"。
+    const pName = new Map(projects.map(p => [p.id, p.name]));
+    const cName = new Map(db.prepare(`SELECT id, name FROM contracts${tw()}`).all()
+      .map(c => [c.id, c.name]));
+    for (const r of schedRows) {
+      r.project_name = pName.has(r.project_id) ? pName.get(r.project_id) : null;
+      r.contract_name = cName.has(r.contract_id) ? cName.get(r.contract_id) : null;
+    }
+  }
+  const allSched = decorateSchedules(schedRows, allocationFromRows(schedRows));
   const sIn = allSched.filter(r => r.direction === 'in');
   const sOut = allSched.filter(r => r.direction === 'out');
   const sumBy = (arr, k) => round2(arr.reduce((s, r) => s + num(r[k]), 0));
@@ -1572,7 +1630,7 @@ function dashboard () {
     week: weekFlows(t),
     new_contract: contractFlows(t),
     extra: extraStats(t, thisMonth, allSched),
-    collect_rank: collectRank(),
+    collect_rank: collectRank(statMap),
   };
 }
 
@@ -1657,10 +1715,14 @@ function extraStats (t, thisMonth, schedRows) {
  *   2) 合同额没算已确认的合同变更，跟台账口径又差一截。
  * 现在统一从 projectStatsMany 取，口径永远一致。
  */
-function collectRank () {
+function collectRank (statMapIn) {
   const rows = db.prepare(`SELECT id, name FROM projects${tw()}`).all();
   if (!rows.length) return [];
-  const statMap = projectStatsMany(rows.map(r => r.id));
+  // 看板里已经算过一遍「全项目统计」（statMap），直接复用 —— 再来一遍就是 8 条聚合白跑。
+  // 只在独立调用（没有现成统计）时才自己算，保证这个函数单独用也是对的。
+  // ⚠️ 不能顺手把 dashboard 的 perProject 传进来：那是 ORDER BY id DESC，
+  //    这里是 rowid 升序，回款率并列时的先后会变（逐字节比对会红）。
+  const statMap = statMapIn || projectStatsMany(rows.map(r => r.id));
   return rows
     .map(r => {
       const s = statMap[r.id] || {};
