@@ -7,6 +7,8 @@
  * 好处是业务查询零改动、还原时原样写回（保留原 id，外键关系不断）。
  */
 const { db, nowISO, daysAgoISO } = require('./db.js');
+// 还原会把行写回原来的表（跨表、说不清是哪张）→ 记 '*'，宁可多失效一次
+const dirty = require('./dirty.js');
 // 多租户：只在 MULTI_TENANT=1 时生效，单机模式下 scope() 返回空串（SQL 一字不改）
 const tenantCtx = require('./tenant.js');
 
@@ -184,6 +186,7 @@ function restore (id) {
     }
     db.prepare('DELETE FROM trash WHERE id = ?').run(entry.id);
     db.exec('COMMIT');
+    dirty.mark('*');
   } catch (e) {
     db.exec('ROLLBACK');
     return { error: '还原失败：' + e.message };

@@ -181,6 +181,61 @@ async function main () {
       if (p.json.totals.contract_in !== null) bad++;
     }
     check('6 轮交替请求，身份与内容始终对应', bad === 0, bad ? bad + ' 次串了' : '12 次请求全部正确');
+
+    // ── [6] 失效面必须按「真的改了哪张表」收窄 ──
+    //
+    // 以前是「只要不是 GET 就全清」：登录、退出、备份、清日志、甚至 400/404
+    // 都会把全公司的看板缓存打掉。下面是两个方向都要守：
+    //   · 没改业务数据的请求 → 必须仍然命中（否则每次登录都全站重算一遍）
+    //   · 改了业务数据的请求 → 必须立刻 miss（否则就是丢更新）
+    console.log('\n[6] 失效面收窄（按脏表而不是按请求方法）');
+    const post = async (p, body, headers) => {
+      const r = await fetch(BASE + p, {
+        method: 'POST',
+        headers: headers || { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return { status: r.status, json: await r.json().catch(() => null), headers: r.headers };
+    };
+    const hitOrMiss = async () => (await dash(A)).cache;
+
+    await dash(A);                                  // 保证已有缓存
+    check('基线：连续两次请求第二次命中', (await dash(A)).cache === 'hit', await hitOrMiss());
+
+    // 重复登录：只写 sessions + logs
+    await login('admin', 'admin123');
+    check('重复登录不会打掉看板缓存', (await dash(A)).cache === 'hit', 'X-Dash-Cache: ' + await dash(A).then(r => r.cache));
+
+    // 退出再登录：写 sessions
+    await post('/api/logout', {}, A);
+    const A2 = await login('admin', 'admin123');
+    await dash(A2);
+    check('退出/登录不会打掉看板缓存（同一账号仍命中）', (await dash(A2)).cache === 'hit');
+
+    // 备份：只写文件 + 一条日志
+    const bk = await post('/api/backup', {}, A2);
+    check('备份接口可用', bk.status === 200, 'HTTP ' + bk.status);
+    check('备份不会打掉看板缓存', (await dash(A2)).cache === 'hit');
+
+    // 清日志：只动 logs 表
+    const lp = await post('/api/logs/purge', { days: 3650 }, A2);
+    check('清日志接口可用', lp.status === 200, 'HTTP ' + lp.status);
+    check('清日志不会打掉看板缓存', (await dash(A2)).cache === 'hit');
+
+    // 校验失败（400）：一个字都没写进库
+    const badReq = await post('/api/save/payments', { direction: 'in', amount: 'not-a-number', pay_date: '' }, A2);
+    check('非法收款被拒（400/422）', badReq.status >= 400 && badReq.status < 500, 'HTTP ' + badReq.status);
+    check('被拒的写请求不会打掉看板缓存', (await dash(A2)).cache === 'hit');
+
+    // 未知接口（404）
+    const nf = await post('/api/does-not-exist', {}, A2);
+    check('未知接口返回 404', nf.status === 404, 'HTTP ' + nf.status);
+    check('404 不会打掉看板缓存', (await dash(A2)).cache === 'hit');
+
+    // 建账号：改的是 users 表，「管理人员」要立刻变
+    const nu = await post('/api/users', { username: 'cache-probe', name: '缓存探针', role: 'custom', status: '启用', password: 'Probe@12345' }, A2);
+    check('建账号成功', nu.status === 200 && !(nu.json && nu.json.error), 'HTTP ' + nu.status);
+    check('★ 建账号后看板必须重算（管理人员数变了）', (await dash(A2)).cache === 'miss');
   } finally {
     await stopServer(srv.srv);
   }

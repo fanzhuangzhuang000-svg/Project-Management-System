@@ -208,6 +208,12 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 交叉访问：聚合路径（看板/勾稽/详情/日志/快照）+ ALS 串号回归。
     // tenant-test 验「行级 CRUD」，这份验「多行聚合不混算」—— 两份都要跑。
     ['多租户交叉访问', 'tenant-cross-test.js'],
+    // 多租户 + HTTP 缓存层：A 租户能不能命中 B 租户的看板缓存。
+    // tenant-cross-test 直接调 dbf.dashboard()，绕过了 HTTP 缓存层，覆盖不到这条。
+    ['多租户看板缓存', 'dashboard-tenant-cache-test.js'],
+    // 脏表收集：缓存失效面从「非 GET 全清」改成「按真的改了哪张表」后，
+    // 每类写原语的记账/不记账都要盯住，漏一个就是界面停在旧账。
+    ['脏表收集', 'dash-dirty-test.js'],
     // 多进程：跨 worker 缓存实时失效 + WAL 多进程写 + 单进程回归。
     // 起真实服务（2 worker / 单进程各一次），时间比普通套件长一点。
     ['多进程集群', 'cluster-test.js'],

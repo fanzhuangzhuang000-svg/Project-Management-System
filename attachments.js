@@ -9,6 +9,8 @@ const crypto = require('node:crypto');
 const { db, DATA_DIR, nowISO, projectChildTables, daysAgoISO } = require('./db.js');
 // 多租户：只在 MULTI_TENANT=1 时生效，单机模式下 scope() 返回空串（SQL 一字不改）
 const tenantCtx = require('./tenant.js');
+// 附件数会出现在首页（totals.attachment_count），增删都要让看板缓存失效
+const dirty = require('./dirty.js');
 
 // 附件存哪由存储层决定：本地目录（单机版）或 MinIO（网络版）
 // 业务代码只调 storage.save / localPath / remove，不关心文件实际在哪
@@ -147,6 +149,7 @@ function add ({ buffer, originalName, tableName, recordId, token, category, proj
     // 单机模式下永远是 1
     tenantCtx.stampTenant(),
   );
+  dirty.mark('attachments');
   return get(Number(info.lastInsertRowid));
 }
 
@@ -163,6 +166,7 @@ function remove (id) {
   if (!row) return { deleted: 0 };
   db.prepare('DELETE FROM attachments WHERE id = ?').run(row.id);
   storage.remove(row.stored_name);
+  dirty.mark('attachments');
   return { deleted: 1 };
 }
 

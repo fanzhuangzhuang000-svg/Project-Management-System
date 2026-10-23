@@ -11,6 +11,9 @@
  */
 const crypto = require('node:crypto');
 const { db, nowISO, fmtLocal } = require('./db.js');
+// 首页「管理人员」数取自 users（status='启用'）。只有真的增/删/改账号才失效；
+// 登录只更新 last_login_at / login_count，不能算脏 —— 否则每次登录都全站重算看板。
+const dirty = require('./dirty.js');
 
 const COOKIE = 'pms_session';
 const SESSION_DAYS = 30;
@@ -395,6 +398,7 @@ function saveUser (input, operator) {
     }
     db.prepare(`UPDATE users SET username=?, name=?, role=?, perms=?, status=?, remark=?, updated_at=? WHERE id=?`)
       .run(username, name, role, JSON.stringify(perms), status, remark, ts, id);
+    dirty.mark('users');
     if (status !== '启用') destroyUserSessions(id);
     if (input.password) {
       const p = passwordProblem(input.password);
@@ -414,6 +418,7 @@ function saveUser (input, operator) {
     username, name, hashPassword(pw), role, JSON.stringify(perms), status,
     input.must_change_pw ? 1 : 0, remark, ts, ts,
   );
+  dirty.mark('users');
   return { ok: true, id: Number(info.lastInsertRowid) };
 }
 
@@ -424,6 +429,7 @@ function deleteUser (id, operator) {
   if (parsePerms(u).all && countAdmins(u.id) === 0) return { error: '至少要保留一个管理员账号' };
   destroyUserSessions(u.id);
   db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
+  dirty.mark('users');
   return { ok: true };
 }
 

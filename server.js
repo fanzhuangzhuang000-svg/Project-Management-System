@@ -28,6 +28,8 @@ const { TABLES, TABLE_ORDER } = require('./schema.js');
 // 多租户上下文。以前这个模块只有「模块级变量」，而 server.js 从来没调过 setTenant() ——
 // 等于 MULTI_TENANT=1 打开后所有人仍然读写租户 1 的数据，隔离一行都没生效。
 const tenantCtx = require('./tenant.js');
+// 脏表收集：写操作真的改了行，才让看板缓存失效（详见 dirty.js）
+const dirty = require('./dirty.js');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const APP_NAME = '弱电智能化工程项目管理系统';
@@ -146,9 +148,11 @@ if (IS_PRIMARY) {
   cluster.on('message', (worker, msg) => {
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'dash-invalidate') {
-      // 任一 worker 的写操作 → 其余 worker 的看板缓存全部失效
+      // 任一 worker 的写操作 → 其余 worker 的看板缓存全部失效。
+      // 原样转发（带上 tables）：worker 侧据此判断要不要真的清，
+      // 不带 tables 的旧消息在 worker 侧按「全清」处理，便于灰度/回滚。
       for (const w of Object.values(cluster.workers)) {
-        if (w && w.id !== worker.id) { try { w.send({ type: 'dash-invalidate' }); } catch { /* 已退出 */ } }
+        if (w && w.id !== worker.id) { try { w.send(msg); } catch { /* 已退出 */ } }
       }
       return;
     }
@@ -243,19 +247,65 @@ function dashSet (key, json) {
   if (dashCache.size > 64) dashCache.clear();
   dashCache.set(key, { at: Date.now(), json });
 }
-function dashClear (origin) {
+function dashClear (origin, tables) {
   dashCache.clear();
   // 集群：写操作发生在任一 worker，其余 worker 的缓存也必须立刻失效。
   // 用户要求「看板必须实时」—— 靠 20 秒 TTL 兜底会在 TTL 窗口内让
   // 另一个 worker 上的同事看到旧账。origin='remote' 是收到广播后的本地清理，
   // 不再回发，防递归。主进程只中继、自己没有缓存。
   if (IS_WORKER && origin !== 'remote' && process.connected) {
-    try { process.send({ type: 'dash-invalidate' }); } catch { /* 主进程不在了，本地清完即可 */ }
+    try { process.send({ type: 'dash-invalidate', tables: tables || [], tenant: tenantCtx.currentTenant() }); } catch { /* 主进程不在了，本地清完即可 */ }
   }
 }
+
+/** 看板读了哪些表 —— 只有这些表真的变了才值得把缓存清掉 */
+const DASH_TABLES = new Set(['projects', 'partners', 'contracts', 'contract_changes',
+  'schedules', 'payments', 'invoices', 'expenses', 'materials', 'maintenance',
+  'users', 'attachments', 'snapshots']);
+
+/** 脏表清单里是否有看板依赖的表（'*' = 说不清改了哪些，按脏处理） */
+function dashAffected (tables) {
+  const list = Array.isArray(tables) ? tables : [];
+  return list.some(t => t === '*' || DASH_TABLES.has(t));
+}
+
+// 失效判据开关：默认「按脏表」，legacy = 恢复「任何非 GET 都全清」（回退用）
+const PMS_DASH_TRACK = String(process.env.PMS_DASH_TRACK || 'table').toLowerCase();
+const DASH_TRACK_DEBUG = process.env.PMS_DASH_TRACK_DEBUG === '1';
+const TRACK_WARNED = new Set();
+
+/**
+ * 请求结束（finally，含客户端中途断开）时按脏表决定要不要清看板缓存。
+ * 由 handleApi 之外的分发层调用，所以必须是模块级函数。
+ */
+function flushDashInvalidation (req) {
+  if (PMS_DASH_TRACK === 'legacy') {
+    if (req.method !== 'GET') dashClear('local');
+    return;
+  }
+  const tables = dirty.end();
+  if (dashAffected(tables)) {
+    dashClear('local', tables);
+    return;
+  }
+  // 只写了日志/会话/设置这类看板不读的表 → 不清缓存
+  if (DASH_TRACK_DEBUG && req.method !== 'GET' && !tables.length) {
+    const p = String(req.url).split('?')[0];
+    if (!TRACK_WARNED.has(p)) {
+      TRACK_WARNED.add(p);
+      console.log(`  [看板失效] ${p} 没有记录到脏表（若它其实改了业务数据，说明缺埋点）`);
+    }
+  }
+}
+
 if (IS_WORKER) {
   process.on('message', m => {
-    if (m && m.type === 'dash-invalidate') dashClear('remote');
+    if (m && m.type === 'dash-invalidate') {
+      // 带 tables 且与看板无关 → 别的 worker 只是改了个设置/写了日志，不必重算。
+      // 不带 tables（老版本消息 / 没收集到）→ 保守全清。
+      if (Array.isArray(m.tables) && m.tables.length && !dashAffected(m.tables)) return;
+      dashClear('remote');
+    }
   });
 }
 
@@ -849,11 +899,6 @@ async function handleApi (req, res, url) {
   const [head, a, b] = seg;
   const q = queryOf(url);
   const method = req.method.toUpperCase();
-
-  // 写操作一结束就清看板缓存：改完数据回首页必须看到最新数字，
-  // 不能因为缓存还没到 20 秒就显示旧账。
-  // 挂在 finish 上、而不是在十几个写分支里各写一遍 —— 以后新增写接口不会再漏。
-  if (method !== 'GET') res.on('finish', dashClear);
 
   if (head === 'health') {
     // ⚠️ db 只给**文件名**，不给完整路径。这里以前直接回显 dbf.DB_FILE_SAFE，
@@ -2253,7 +2298,15 @@ const server = http.createServer((req, res) => {
       // 每一次 await 之后拿到的仍然是本请求自己的租户，不会串到别人。
       // 未登录的接口（health / login）走租户 1，登录接口在内部会按账号重新设置。
       .then(() => tenantCtx.runWithTenant(req.user ? req.user.tenant_id : 1,
-        () => handleApi(req, res, url)))
+        () => dirty.run(async () => {
+          try {
+            await handleApi(req, res, url);
+          } finally {
+            // 必须在这个作用域里 flush：dirty 的上下文绑在 dirty.run 的异步链上，
+            // 挂到外层 .finally() 上会拿到空上下文（等于永不失效）。
+            flushDashInvalidation(req);
+          }
+        })))
       .catch(e => {
         console.error('[API 错误]', e);
         if (!res.headersSent) sendJSON(res, 500, { error: e.message || '服务器内部错误' });
@@ -2365,7 +2418,17 @@ if (!seedResult.existed) {
 const maintenance = require('./maintenance.js');
 // 集群下这些「全库只跑一份」的任务（每日备份 / 月度快照 / 超期清理 / 断点续跑）全挂维护角色，
 // 否则 N 个 worker 各跑一遍：备份文件翻 N 倍、OCR 同一附件识别 N 次。
+/**
+ * 维护任务不经过 HTTP，它的写落不到任何请求的账上 —— 由 dirty 的 pending 兜底。
+ * 快照、暂存附件清理、回收站清理、孤儿行清扫都会动看板依赖的表。
+ */
+function flushDirtyAfterMaintenance () {
+  const pend = dirty.takePending();
+  if (dashAffected(pend)) dashClear('maint', pend);
+}
+
 const dailyBoot = IS_MAINT_ROLE ? maintenance.runDaily() : { errors: [] };
+flushDirtyAfterMaintenance();
 const sessionsPurged = dailyBoot.sessions;
 const purged = dailyBoot.orphans;
 const trashPurged = dailyBoot.trash;
@@ -2392,6 +2455,7 @@ setInterval(() => {
   } catch (e) {
     console.log('  [维护] 本次维护失败（服务继续运行）：' + e.message);
   }
+  flushDirtyAfterMaintenance();
 }, MAINTENANCE_INTERVAL_MS).unref();
 
 // 断点续跑：上次没跑完的识别任务重新入队（OCR 队列是进程内存，集群下只挂维护角色，

@@ -487,6 +487,44 @@ check('回收站统计带 bytes（占用空间不会算出 NaN）',
 }
 
 // ================================================================
+console.log('\n[待办数] extra.todo_count 必须按「冲抵后的未收金额」算');
+{
+  // 这条曾经恒为 0：SQL 里查了 remaining（虚拟列，库里没有），
+  // prepare 就抛错，外层 catch 把它连同另外两个子查询一起吞了。
+  const pid = dbf.insertRow('projects', { name: 'TODO-冲抵项目', status: '进行中' }).id;
+  const cid = dbf.insertRow('contracts', {
+    name: 'TODO-冲抵合同', project_id: pid, direction: 'in', amount: 200,
+    tax_rate: 0, category: '项目合同', sign_date: '2026-01-01',
+  }).id;
+  dbf.insertRow('schedules', { contract_id: cid, project_id: pid, direction: 'in', amount: 100, due_date: '2026-02-01', phase: '一期' });
+  dbf.insertRow('schedules', { contract_id: cid, project_id: pid, direction: 'in', amount: 100, due_date: '2026-03-01', phase: '二期' });
+
+  const base = dbf.dashboard().extra.todo_count;
+  check('待办数不是死的 0（修复前恒为 0）', Number.isFinite(base) && base >= 2, String(base));
+
+  // 收款 150：按 due_date 顺序冲抵 —— 一期吃满 100、二期吃 50，只剩二期未收
+  dbf.insertRow('payments', {
+    project_id: pid, contract_id: cid, direction: 'in', kind: '工程款',
+    amount: 150, pay_date: '2026-02-15', method: '银行转账',
+  });
+  const mid = dbf.dashboard().extra.todo_count;
+  check('★ 收款 150 后只剩 1 个未收节点（按项目总额差算会错成 2 个）', mid === base - 1, `${base} → ${mid}`);
+
+  // 再收 50 把二期也吃完 → 两个节点都不再计入
+  dbf.insertRow('payments', {
+    project_id: pid, contract_id: cid, direction: 'in', kind: '工程款',
+    amount: 50, pay_date: '2026-03-15', method: '银行转账',
+  });
+  const done = dbf.dashboard().extra.todo_count;
+  check('★ 全部收完后 2 个节点都退出待办', done === base - 2, `${base} → ${done}`);
+
+  // 与「收付款计划」页同一个口径：节点状态里 已完成 的数量要对得上
+  const nodes = dbf.listRows('schedules', { project_id: pid }).rows;
+  check('计划页与待办数一致（2 个节点都已完成）',
+    nodes.length === 2 && nodes.every(n => n.state === '已完成'), nodes.map(n => n.state).join(','));
+}
+
+// ================================================================
 const badRows = results.filter(r => !r.ok);
 console.log(`\n${results.length - badRows.length} / ${results.length} 项通过${skipped ? `（另跳过 ${skipped} 条）` : ''}`);
 if (badRows.length) {

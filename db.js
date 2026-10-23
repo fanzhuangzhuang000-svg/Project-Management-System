@@ -9,6 +9,8 @@ const fs = require('node:fs');
 const { TABLES, TABLE_ORDER } = require('./schema.js');
 // 多租户上下文。单机模式下它的 scope() 返回空串，对 SQL 没有任何影响。
 const tenantCtx = require('./tenant.js');
+// 脏表收集：写操作真的改了行，就让看板缓存失效（见 dirty.js 的注释）。
+const dirty = require('./dirty.js');
 
 // 连接交给驱动层：配了 DB_URL 就走 PostgreSQL，没配就是本地 SQLite。
 // 业务代码只认 db 这个句柄的 prepare/exec，不关心底层是哪个数据库。
@@ -606,6 +608,7 @@ function insertRow (table, input) {
   keys.push('tenant_id');
   const sql = `INSERT INTO ${table} (${keys.join(',')}, is_demo, created_at, updated_at) VALUES (${keys.map(() => '?').join(',')}, 0, ?, ?)`;
   const info = db.prepare(sql).run(...keys.map(k => row[k]), ts, ts);
+  dirty.mark(table);
   return { id: Number(info.lastInsertRowid) };
 }
 
@@ -627,7 +630,9 @@ function updateRow (table, id, input) {
   // 万一将来有人绕过 getRow 直接调这里，也不会改到别人的数据。
   const sql = `UPDATE ${table} SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`
     + (tCondU ? ` AND ${tCondU}` : '');
-  db.prepare(sql).run(...keys.map(k => merged[k]), nowISO(), parseInt(id, 10));
+  const info = db.prepare(sql).run(...keys.map(k => merged[k]), nowISO(), parseInt(id, 10));
+  // 命中 0 行 = 没改成（例如并发删除、或条件不匹配），不算脏
+  if (Number(info.changes) > 0) dirty.mark(table);
   return { id: parseInt(id, 10) };
 }
 
@@ -645,6 +650,7 @@ function deleteRow (table, id) {
   // 单机模式下 scope() 是空串，SQL 与本改造前完全一致。
   const tCondD = tenantCtx.scope('');
   const info = db.prepare(`DELETE FROM ${table} WHERE id = ?` + (tCondD ? ` AND ${tCondD}` : '')).run(parseInt(id, 10));
+  if (Number(info.changes) > 0) dirty.mark(table);
   return { deleted: Number(info.changes) };
 }
 
@@ -747,6 +753,9 @@ function deleteOneInTx (table, id) {
     db.prepare('UPDATE payments SET invoice_id = NULL WHERE invoice_id = ?').run(id);
   }
   const info = db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
+  // 级联会顺带改别的表，但入口表一定在看板依赖里（projects/contracts/invoices/
+  // partners/…），所以记入口表足够触发失效；'*' 只留给真的说不清的情况。
+  if (Number(info.changes) > 0) dirty.mark(table);
   return Number(info.changes);
 }
 
@@ -1090,6 +1099,7 @@ function backfillInvoiceLinks () {
     db.exec('ROLLBACK');
     throw e;
   }
+  if (linked > 0) dirty.mark('payments');   // 改了 payments.invoice_id → 发票勾稽会变
   return { linked, skipped, amount, scanned: pays.length, invoices: invs.length };
 }
 
@@ -1898,6 +1908,7 @@ function clearDemo () {
   try {
     const r = clearDemoInner();
     db.exec('COMMIT');
+    if (Object.keys(r || {}).length) dirty.mark('*');   // 跨十几张表，说不清就全算脏
     return r;
   } catch (e) { db.exec('ROLLBACK'); return { error: e.message }; }
 }
@@ -1996,6 +2007,7 @@ function seed (force) {
     const keys = Object.keys(row);
     const info = db.prepare(`INSERT INTO ${t} (${keys.join(',')}, is_demo, created_at, updated_at) VALUES (${keys.map(() => '?').join(',')}, 1, ?, ?)`)
       .run(...keys.map(k => row[k]), ts, ts);
+    dirty.mark(t);
     return Number(info.lastInsertRowid);
   };
 
@@ -2217,6 +2229,7 @@ function generatePlan (contractId, opts = {}) {
         .run(...keys.map(k => row[k]), demoFlag, ts, ts);
     }
     db.exec('COMMIT');
+    dirty.mark('schedules');
   } catch (e) {
     db.exec('ROLLBACK');
     return { error: '生成失败：' + e.message };
@@ -2272,6 +2285,9 @@ function sweepOrphans () {
       WHERE contract_id IS NOT NULL AND contract_id NOT IN (SELECT id FROM contracts)`).run();
     if (Number(r.changes)) out[`${t}_unlinked`] = Number(r.changes);
   }
+  // 删了孤儿行 / 解了失效关联 → 看板数字会变。这个函数在启动和维护任务里跑，
+  // 大多没有请求上下文（标记会落到 pending，由维护循环统一处理）。
+  if (Object.keys(out).length) dirty.mark('*');
   return out;
 }
 

@@ -15,6 +15,8 @@ const tenantCtx = require('./tenant.js');
 const KEEP_MONTHS = 60;          // 最多留 5 年
 // 孤儿/容量清理类语句的豁免标记：跨租户全局执行是有意的（见 db.js sweepOrphans）
 const GLOBAL = '/* tenant-global */';
+// 看板的趋势/环比读 snapshots：结账或删快照都要让缓存失效
+const dirty = require('./dirty.js');
 
 // 租户条件：scope() 返回裸条件（不带 WHERE），这里统一补前缀。
 // 已有 WHERE 的语句用 snapTenantAnd()，没有的用 snapTenantWhere()。
@@ -95,6 +97,7 @@ function capture (ym, kind = 'manual', note = null) {
   // 容量上限按全局算：这是存储保护，不是业务口径
   db.prepare(`DELETE FROM snapshots ${GLOBAL} WHERE id NOT IN (
       SELECT id FROM snapshots ORDER BY ym DESC LIMIT ?)`).run(KEEP_MONTHS);
+  dirty.mark('snapshots');
   return { ok: true, ym, kind, note };
 }
 
@@ -110,7 +113,9 @@ function list (limit = 24) {
 }
 
 function remove (ym) {
-  return { deleted: Number(db.prepare(`DELETE FROM snapshots WHERE ym = ?${snapTenantAnd()}`).run(String(ym || '')).changes) };
+  const deleted = Number(db.prepare(`DELETE FROM snapshots WHERE ym = ?${snapTenantAnd()}`).run(String(ym || '')).changes);
+  if (deleted > 0) dirty.mark('snapshots');
+  return { deleted };
 }
 
 /** 启动时补记上个月的快照（已经有了就跳过） */
