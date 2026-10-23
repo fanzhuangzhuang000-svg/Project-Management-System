@@ -22,6 +22,19 @@ const DB_FILE_SAFE = driver.DB_FILE_SAFE;
 const DB_EXISTED = driver.DB_EXISTED;
 const db = driver.db;
 
+/**
+ * 同一处错误只打一次警告。
+ * 聚合里的 `catch {}` 曾经把"查了不存在的列"这种真 bug 静默了几个月 ——
+ * 看板的待办数就这么一直显示 0。兜底可以留，但必须留下痕迹。
+ */
+const WARNED = new Set();
+function warnOnce (key, e) {
+  if (WARNED.has(key)) return;
+  WARNED.add(key);
+  const msg = e && e.message ? e.message : String(e || '');
+  console.warn(`[看板] ${key} 取值失败（该项按 0 处理，后续不再重复提示）：${msg}`);
+}
+
 /** 上一次 init() 的迁移结果（版本 / 失败原因 / 备份文件），给接口和界面用 */
 let LAST_MIGRATION = { version: 0, error: null, backup: null };
 const migrationInfo = () => ({ ...LAST_MIGRATION });
@@ -1558,7 +1571,7 @@ function dashboard () {
     // ---- 首页 2.0（管理系统风格）新增数据块 ----
     week: weekFlows(t),
     new_contract: contractFlows(t),
-    extra: extraStats(t, thisMonth),
+    extra: extraStats(t, thisMonth, allSched),
     collect_rank: collectRank(),
   };
 }
@@ -1603,18 +1616,30 @@ function contractFlows (t) {
 }
 
 /** 六个小指标里没有现成值的几个：管理人员 / 本月新增项目 / 待办事项数 */
-function extraStats (t, thisMonth) {
+/**
+ * @param schedRows 已计算好的计划节点（dashboard 里 allSched 就是），用来数"未收款的收入计划"
+ *
+ * ⚠️ 待办数以前是这么写的：
+ *      SELECT COUNT(*) FROM schedules WHERE remaining > 0.005 AND direction='in'
+ *    `remaining` 是**虚拟列**（schema.js 里 virtual:true，由 payments 冲抵算出来），
+ *    库里根本没有这一列 → prepare 阶段就抛 "no such column"，
+ *    外层 `catch {}` 把它连同维修单、未回款发票两个子查询一起吞掉。
+ *    结果：首页"待办事项"长期恒为 0，而且一声不响。
+ *    现在节点数由调用方传进来（同一份数据、同一套冲抵口径），SQL 里不再出现 remaining。
+ */
+function extraStats (t, thisMonth, schedRows) {
   let staff = 0, newProjects = 0, todoCount = 0;
-  try { staff = db.prepare("SELECT COUNT(*) c FROM users WHERE status='启用'").get().c; } catch { /* 表不在就不给 */ }
-  try { newProjects = db.prepare("SELECT COUNT(*) c FROM projects WHERE substr(created_at,1,7)=?" + tw('', true)).get(thisMonth).c; } catch { /* 同上 */ }
+  try { staff = db.prepare("SELECT COUNT(*) c FROM users WHERE status='启用'" + tw('', true)).get().c; } catch (e) { warnOnce('extra.staff', e); }
+  try { newProjects = db.prepare("SELECT COUNT(*) c FROM projects WHERE substr(created_at,1,7)=?" + tw('', true)).get(thisMonth).c; } catch (e) { warnOnce('extra.new_projects', e); }
   try {
     const r = db.prepare(`SELECT
-        (SELECT COUNT(*) FROM schedules WHERE remaining > 0.005 AND direction='in'${tw('', true)}) AS a,
         (SELECT COUNT(*) FROM maintenance WHERE status <> '已完成' AND status <> '已关闭'${tw('', true)}) AS b,
         (SELECT COUNT(*) FROM invoices WHERE direction='out' AND status='未回款'${tw('', true)}) AS c
       `).get();
-    todoCount = (r.a || 0) + (r.b || 0) + (r.c || 0);
-  } catch { /* 同上 */ }
+    // 与「收付款计划」页、账龄分析同一套口径：direction='in' 且还有未收金额
+    const a = (schedRows || []).filter(r2 => r2.direction === 'in' && num(r2.remaining) > 0.005).length;
+    todoCount = a + (r.b || 0) + (r.c || 0);
+  } catch (e) { warnOnce('extra.todo_count', e); }
   return { staff, new_projects: newProjects, todo_count: todoCount };
 }
 

@@ -219,11 +219,16 @@ const DASH_TTL_MS = (() => {
 })();
 const dashCache = new Map();
 
-function dashKey (perms) {
-  if (!perms) return 'none';
-  if (perms.all) return 'all';
+function dashKey (perms, tenantId) {
+  // ⚠️ 租户必须在 key 里。
+  //    以前 key 只有权限指纹 —— 多租户打开后，两个租户里权限相同的账号
+  //    会命中同一份缓存，B 公司的人看到的就是 A 公司的账。
+  //    单机模式下永远是 t1|，key 结构与以前等价。
+  const pre = 't' + (Number(tenantId) || 1) + '|';
+  if (!perms) return pre + 'none';
+  if (perms.all) return pre + 'all';
   const norm = a => (Array.isArray(a) ? [...a].sort().join(',') : '');
-  return 'r:' + norm(perms.read) + '|w:' + norm(perms.write);
+  return pre + 'r:' + norm(perms.read) + '|w:' + norm(perms.write);
 }
 function dashGet (key) {
   if (!DASH_TTL_MS) return null;
@@ -1049,7 +1054,7 @@ async function handleApi (req, res, url) {
   if (head === 'dashboard') {
     // 驾驶舱按权限过滤：看不到的模块，对应数字直接不返回
     if (!anyRead(req.user.perms)) return sendJSON(res, 403, { error: '没有查看经营总览的权限' });
-    const ck = dashKey(req.user.perms);
+    const ck = dashKey(req.user.perms, tenantCtx.currentTenant());
     const cached = dashGet(ck);
     if (cached) return sendRawJSON(res, 200, cached, { 'X-Dash-Cache': 'hit' });
 
