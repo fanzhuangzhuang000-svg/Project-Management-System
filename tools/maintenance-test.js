@@ -129,9 +129,8 @@ async function waitFor (ms, fn) {
   return false;
 }
 
-const backups = () => {
-  try { return fs.readdirSync(BACKUPDIR).filter(n => /^pms_\d{8}_\d{6}/.test(n)); } catch { return []; }
-};
+// 与产品使用同一份备份列表，排除 VACUUM INTO 的 journal 等临时旁路文件。
+const backups = () => require('../backup.js').listBackups().map(b => b.name);
 
 async function main () {
   console.log('\n  日常维护');
@@ -192,6 +191,18 @@ async function main () {
     for (const f of backups()) { try { fs.unlinkSync(path.join(BACKUPDIR, f)); } catch { /* 占用中 */ } }
     const backAgain = await waitFor(6000, async () => backups().length > 0);
     check('删掉备份后，运行期会自己补一份（不用重启服务）', backAgain, '备份目录里还是空的');
+    // VACUUM INTO 期间可能短暂出现同名前缀的 journal；它不是另一份备份。
+    // 固定放入旁路文件，避免只能靠 CI 恰好撞上文件消失的瞬间复现。
+    const completed = backups().length;
+    const sidecars = ['.db-journal', '.db-wal', '.db-shm', '.json.tmp']
+      .map(ext => path.join(BACKUPDIR, 'pms_20000101_000000_probe' + ext));
+    try {
+      for (const f of sidecars) fs.writeFileSync(f, 'not a completed backup');
+      check('备份计数忽略 journal / WAL / 临时文件', backups().length === completed,
+        `${completed} → ${backups().length}`);
+    } finally {
+      for (const f of sidecars) fs.unlinkSync(f);
+    }
     const before = backups().length;
     await sleep(2500);
     check('同一天不会重复备份（幂等）', backups().length === before, `${before} → ${backups().length}`);

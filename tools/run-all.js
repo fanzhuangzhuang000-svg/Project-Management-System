@@ -12,6 +12,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
+const { suiteResult } = require('./suite-result.js');
 
 const ROOT = path.join(__dirname, '..');
 // 基址和默认端口都来自 tools/test-base.js —— 那里写了为什么不能默认 8787
@@ -58,7 +59,7 @@ function runNode (script, args = [], timeout = 900000) {
   const r = spawnSync('node', ['--no-warnings', script, ...args], {
     cwd: ROOT, encoding: 'utf8', timeout, windowsHide: true,
   });
-  return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };
+  return { code: r.status, error: r.error, signal: r.signal, out: (r.stdout || '') + (r.stderr || '') };
 }
 
 /**
@@ -118,7 +119,9 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   {
     const r = runNode(path.join('tools', 'repo-bundle.js'));
     const line = r.out.split('\n').find(l => /仓库快照|没打成/.test(l)) || '';
-    row('仓库快照', /仓库快照：/.test(line), line.replace(/^\s*[✓⊘]\s*/, '').slice(0, 90));
+    const completed = r.code === 0 && !r.error && !r.signal;
+    if (completed && /仓库快照没打成：/.test(line)) skip('仓库快照', line.replace(/^\s*⊘\s*/, ''));
+    else row('仓库快照', completed && /仓库快照：/.test(line), line.replace(/^\s*[✓⊘]\s*/, '').slice(0, 90));
   }
 
   let up = false;
@@ -179,10 +182,11 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
   head('2/6  纯函数单元测试');
   {
     const r = runNode(path.join('tools', 'unit-test.js'));
-    const m = /(\d+)\s*\/\s*(\d+) 项通过/.exec(r.out);
-    const p = m ? +m[1] : 0, a = m ? +m[2] : 0;
-    row('单元测试', p === a && a > 0, a ? `${p}/${a}` : '✗ 未取得结果');
-    if (p !== a) console.log(r.out.split('\n').filter(l => l.includes('✗')).join('\n'));
+    const result = suiteResult(r);
+    const passed = result.status === 'passed';
+    const detail = result.total !== null ? `${result.passed}/${result.total}` : '未取得结果';
+    row('单元测试', passed, `${detail}${passed ? '' : '  — ' + result.reason}`);
+    if (!passed) console.log(r.out.split('\n').filter(l => l.includes('✗')).join('\n'));
   }
 
   // ---------- 3. 主程序测试套件 ----------
@@ -269,6 +273,7 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 起源：过期会话/暂存附件/回收站清理/月度快照/每日备份原来只在启动时跑一次，
     // 单机版装完一直开着 → 一个月后回收站还满着、备份只有一份。
     ['日常维护', 'maintenance-test.js'],
+    ['测试结果判定', 'suite-result-test.js'],
     // 看板缓存：缓存是性能手段，但它在三个地方能被搞坏 —— 改了数据返回旧账、
     // 命中与实时不一致、**不同权限串缓存**（最后一条是数据泄漏）。
     // 这套件就是拿一个只有材料读权的账号去撞缓存 key：
@@ -292,25 +297,25 @@ const CI = process.argv.includes('--ci') || process.env.PMS_CI === '1';
     // 不是缺文件，所以没法在 CI_SKIP 里静态列出来 —— 同一台机器换个环境就跑得了。
     // 以前这种套件只能二选一：假装通过（埋雷），或直接失败（噪音）。
     // 现在统一约定：打印 `SKIP: 原因` 并以 0 退出，由这里转成"未执行"。
-    const skipMsg = /^\s*SKIP[:：]\s*(.+)$/m.exec(r.out);
-    if (skipMsg) {
+    const result = suiteResult(r);
+    if (result.status === 'skipped') {
       skipped++;
-      skip(name, skipMsg[1].trim());
+      skip(name, result.reason);
       continue;
     }
-    const m = /(\d+)\s*\/\s*(\d+) 项通过/.exec(r.out);
-    if (m) {
-      const p = +m[1], a = +m[2];
+    if (result.total !== null) {
+      const p = result.passed, a = result.total;
       // 套件内部主动跳过的用例数（例如没有中文 OCR 语言包时的图片识别断言）。
       // 这些不计入分母，但必须显示出来 —— 否则「31/31」看着满分，
       // 实际有 2 条根本没跑。
       const inner = /跳过\s*(\d+)/.exec(r.out);
       const note = inner && +inner[1] > 0 ? `  跳过 ${inner[1]} 条` : '';
       suitePass += p; suiteTotal += a;
-      row(name, p === a, `${p}/${a}  ${sec}s${note}`);
-      if (p !== a) console.log(r.out.split('\n').filter(l => l.includes('✗')).slice(0, 6).map(l => '        ' + l.trim()).join('\n'));
+      const passed = result.status === 'passed';
+      row(name, passed, `${p}/${a}  ${sec}s${note}${passed ? '' : '  — ' + result.reason}`);
+      if (!passed) console.log(r.out.split('\n').filter(l => l.includes('✗')).slice(0, 6).map(l => '        ' + l.trim()).join('\n'));
     } else {
-      row(name, false, '✗ 未取得结果');
+      row(name, false, `✗ ${result.reason}`);
       console.log(r.out.split('\n').slice(-8).map(l => '        ' + l).join('\n'));
     }
   }
