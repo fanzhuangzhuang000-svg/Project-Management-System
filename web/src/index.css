@@ -335,7 +335,7 @@ html[data-theme='dark'] {
 
   /* 项目列表在自己的区域内滚动，让底部合计、翻页和横向滚动条留在视野内。 */
   .project-ledger-scroll {
-    max-height: clamp(360px, calc(100dvh - 410px), 780px);
+    height: clamp(300px, calc(100dvh - 510px), 720px);
     overflow: auto;
     scrollbar-gutter: stable;
   }
@@ -347,8 +347,7 @@ html[data-theme='dark'] {
   }
   .project-ledger-table thead .project-ledger-sticky { z-index: 15; }
   .project-ledger-footer {
-    position: sticky;
-    bottom: 0;
+    position: relative;
     z-index: 20;
     padding-top: 8px;
     background: var(--card-bg);
