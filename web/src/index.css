@@ -333,6 +333,28 @@ html[data-theme='dark'] {
   .project-ledger-table.project-ledger-can-write .project-ledger-balance { left: 296px; }
   .project-ledger-table tbody tr:hover .project-ledger-sticky { background: var(--tile-bg); }
 
+  /* 项目列表在自己的区域内滚动，让底部合计、翻页和横向滚动条留在视野内。 */
+  .project-ledger-scroll {
+    max-height: clamp(300px, calc(100dvh - 510px), 720px);
+    overflow: auto;
+    scrollbar-gutter: stable;
+  }
+  .project-ledger-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--card-bg);
+  }
+  .project-ledger-table thead .project-ledger-sticky { z-index: 15; }
+  .project-ledger-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
+    padding-top: 8px;
+    background: var(--card-bg);
+    box-shadow: 0 -12px 24px -24px rgb(var(--c-ink-900) / 0.45);
+  }
+
   /* 骨架屏 */
   .skeleton {
     background: linear-gradient(90deg, #EEF2F7 25%, #F8FAFC 50%, #EEF2F7 75%);

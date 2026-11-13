@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   Plus, Search, Download, Trash2, Pencil, ArrowUpDown, ChevronLeft, ChevronRight,
@@ -25,7 +25,7 @@ const PAGE_SIZE = 20
 
 export default function TablePage() {
   const { table = 'projects' } = useParams()
-  const { meta, user, dash, refreshDash } = useApp()
+  const { meta, user, dash, refreshDash, refreshMeta } = useApp()
   const nav = useNavigate()
   const toast = useToast()
   const { confirm, confirmNode } = useConfirm()
@@ -43,12 +43,15 @@ export default function TablePage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
   const [busy, setBusy] = useState(false)
+  const [reloadSeq, setReloadSeq] = useState(0)
+  const requestSeq = useRef(0)
 
   const canWrite = !!user?.perms && (user.perms.all || user.perms.write.includes(table))
 
   /* ---------- 取数 ---------- */
   const load = useCallback(async () => {
     if (!def) return
+    const requestId = ++requestSeq.current
     setBusy(true)
     try {
       const r = await http.list(table, {
@@ -56,15 +59,43 @@ export default function TablePage() {
         ...filters,
         limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE,
       })
+      if (requestId !== requestSeq.current) return
       setRows(r.rows); setTotal(r.total); setSums(r.sums || {})
     } catch (e) {
+      if (requestId !== requestSeq.current) return
       toast((e as Error).message, 'err')
       setRows([])
-    } finally { setBusy(false) }
-  }, [table, def, q, sort, order, filters, page, toast])
+    } finally {
+      if (requestId === requestSeq.current) setBusy(false)
+    }
+  }, [table, def, q, sort, order, filters, page, toast, reloadSeq])
 
-  useEffect(() => { setSelected([]) }, [table, q, filters, page])
+  // projects / contracts 等模块复用同一个组件。切换模块时必须清掉上一张表的
+  // 页码、搜索和筛选，否则用户会落在旧的第 2 页或旧筛选里，误以为新记录没保存。
+  useEffect(() => {
+    setQ('')
+    setFilters({})
+    setSort('')
+    setOrder('desc')
+    setPage(1)
+    setSelected([])
+  }, [table])
+  useEffect(() => { setSelected([]) }, [q, filters, page])
   useEffect(() => { const t = setTimeout(load, 240); return () => clearTimeout(t) }, [load])
+
+  const afterRecordSaved = useCallback((_id: number, isNew: boolean) => {
+    if (isNew) {
+      // 新增记录默认按 id 倒序显示在第一页；清掉旧查询条件，确保保存后立刻看得见。
+      setQ('')
+      setFilters({})
+      setSort('')
+      setOrder('desc')
+      setPage(1)
+    }
+    setReloadSeq(n => n + 1)
+    // 项目/合同既影响总览，也会成为其它表单的下拉选项。
+    void Promise.all([refreshDash(), refreshMeta()])
+  }, [refreshDash, refreshMeta])
 
   /* ---------- 排序 ---------- */
   const toggleSort = (name: string) => {
@@ -372,7 +403,10 @@ export default function TablePage() {
             <Empty icon={Icon} title={`还没有${def.label}数据`}
               hint={canWrite ? `点右上角「新建${def.label}」开始录入` : '当前筛选条件下没有记录'} />
           ) : (
-            <div className="overflow-x-auto px-2 pb-2">
+            <div className={cn(
+              'overflow-x-auto px-2 pb-2',
+              table === 'projects' && 'project-ledger-scroll',
+            )}>
               <table className={cn(
                 'tbl min-w-full',
                 table === 'projects' && 'project-ledger-table',
@@ -459,32 +493,34 @@ export default function TablePage() {
             </div>
           )}
 
-          {/* 合计行 */}
-          {rows?.length ? (
-            <div className="mx-5 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-tile bg-slate-50 px-4 py-2.5">
-              <span className="text-tiny font-medium text-ink-500">本页合计</span>
-              {listFields.filter(f => f.type === 'money').map(f => (
-                <span key={f.name} className="text-tiny text-ink-500">
-                  {f.label} <b className="tnum text-ink-900">¥{fmtMoney(sums[f.name] || 0)}</b>
-                </span>
-              ))}
-            </div>
-          ) : null}
-
-          {/* 分页 */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between px-5 pb-5">
-              <span className="text-tiny text-ink-400">第 {page} / {totalPages} 页</span>
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="soft" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
-                  <ChevronLeft size={15} /> 上一页
-                </Button>
-                <Button size="sm" variant="soft" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
-                  下一页 <ChevronRight size={15} />
-                </Button>
+          <div className={cn(table === 'projects' && 'project-ledger-footer')}>
+            {/* 合计行 */}
+            {rows?.length ? (
+              <div className="mx-5 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-tile bg-slate-50 px-4 py-2.5">
+                <span className="text-tiny font-medium text-ink-500">本页合计</span>
+                {listFields.filter(f => f.type === 'money').map(f => (
+                  <span key={f.name} className="text-tiny text-ink-500">
+                    {f.label} <b className="tnum text-ink-900">¥{fmtMoney(sums[f.name] || 0)}</b>
+                  </span>
+                ))}
               </div>
-            </div>
-          )}
+            ) : null}
+
+            {/* 分页 */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between px-5 pb-5">
+                <span className="text-tiny text-ink-400">第 {page} / {totalPages} 页</span>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="soft" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+                    <ChevronLeft size={15} /> 上一页
+                  </Button>
+                  <Button size="sm" variant="soft" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
+                    下一页 <ChevronRight size={15} />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
         </Card>
 
       </div>
@@ -493,7 +529,7 @@ export default function TablePage() {
       <RecordForm
         open={formOpen} table={table} record={editing} meta={meta!}
         onClose={() => setFormOpen(false)}
-        onSaved={() => { void load(); void refreshDash() }}
+        onSaved={afterRecordSaved}
       />
     </div>
   )
