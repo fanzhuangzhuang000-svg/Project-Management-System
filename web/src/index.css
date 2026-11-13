@@ -312,6 +312,27 @@ html[data-theme='dark'] {
   .tbl tbody td { @apply px-4 py-3 align-middle; }
   .tbl tbody tr + tr td { box-shadow: inset 0 1px 0 rgb(var(--c-surface-3) / 0.5); }
 
+  /* 项目台账：横向滚动时始终保留项目名称和应收余额。 */
+  .project-ledger-table .project-ledger-sticky {
+    position: sticky;
+    background: var(--card-bg);
+  }
+  .project-ledger-table thead .project-ledger-sticky { z-index: 12; }
+  .project-ledger-table tbody .project-ledger-sticky { z-index: 2; }
+  .project-ledger-table .project-ledger-check {
+    left: 0;
+    min-width: 56px;
+    width: 56px;
+  }
+  .project-ledger-table .project-ledger-name { left: 0; }
+  .project-ledger-table .project-ledger-balance {
+    left: 240px;
+    box-shadow: 8px 0 12px -12px rgb(var(--c-ink-900) / 0.4);
+  }
+  .project-ledger-table.project-ledger-can-write .project-ledger-name { left: 56px; }
+  .project-ledger-table.project-ledger-can-write .project-ledger-balance { left: 296px; }
+  .project-ledger-table tbody tr:hover .project-ledger-sticky { background: var(--tile-bg); }
+
   /* 骨架屏 */
   .skeleton {
     background: linear-gradient(90deg, #EEF2F7 25%, #F8FAFC 50%, #EEF2F7 75%);

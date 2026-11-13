@@ -6,11 +6,10 @@ import {
   TrendingUp, Coins, ReceiptText, Package, Wrench, Building2, FilePenLine, ScrollText,
 } from 'lucide-react'
 import {
-  Button, Card, CardHeader, CardTitle, CardAction, Pill, Input, Select, Empty,
+  Button, Card, Pill, Input, Select, Empty,
   Skeleton, Progress, Avatar, IconTile,
   BADGE_TONE,
 } from '@/components/ui/primitives'
-import { TrendLines, DonutWithLegend, MiniBars } from '@/components/ui/charts'
 import { RecordForm } from '@/components/form/RecordForm'
 import { useConfirm, useToast } from '@/components/ui/overlay'
 import { useApp } from '@/app-context'
@@ -262,7 +261,15 @@ export default function TablePage() {
 
   if (!def) return <Empty title="未知数据表" />
   const Icon = TABLE_ICON[table] || Inbox
-  const listFields = def.fields.filter(f => f.list)
+  const rawListFields = def.fields.filter(f => f.list)
+  // 项目台账最常同时核对的是「项目名称」和「应收余额」。
+  // 把余额提前到名称旁边，避免用户为了看剩余应收款先滚到表格底部再横向拖动。
+  const listFields = table === 'projects'
+    ? [
+        ...rawListFields.filter(f => ['code', 'name', 'receivable'].includes(f.name)),
+        ...rawListFields.filter(f => !['code', 'name', 'receivable'].includes(f.name)),
+      ]
+    : rawListFields
   const filterFields = def.fields.filter(f => (f.type === 'select' || f.type === 'ref') && f.list).slice(0, 3)
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const allChecked = rows?.length ? rows.every(r => selected.includes(r.id)) : false
@@ -318,9 +325,9 @@ export default function TablePage() {
         </div>
       )}
 
-      {/* ══════ 主体：项目页右侧带图表 ══════ */}
-      <div className={cn('grid grid-cols-1 gap-4', table === 'projects' ? 'xl:grid-cols-12' : '')}>
-        <Card className={cn(table === 'projects' && 'xl:col-span-8')}>
+      {/* ══════ 主体：数据表格 ══════ */}
+      <div className="grid grid-cols-1 gap-4">
+        <Card>
           {/* 工具条 */}
           <div className="flex flex-wrap items-center gap-2.5 px-5 pt-5 pb-3">
             <div className="relative w-[240px]">
@@ -366,18 +373,25 @@ export default function TablePage() {
               hint={canWrite ? `点右上角「新建${def.label}」开始录入` : '当前筛选条件下没有记录'} />
           ) : (
             <div className="overflow-x-auto px-2 pb-2">
-              <table className="tbl min-w-full">
+              <table className={cn(
+                'tbl min-w-full',
+                table === 'projects' && 'project-ledger-table',
+                table === 'projects' && canWrite && 'project-ledger-can-write',
+              )}>
                 <thead>
                   <tr>
                     {canWrite && (
-                      <th className="w-10">
+                      <th className={cn('w-10', table === 'projects' && 'project-ledger-sticky project-ledger-check')}>
                         <input type="checkbox" checked={allChecked}
                           onChange={e => setSelected(e.target.checked ? rows.map(r => r.id) : [])}
                           className="h-4 w-4 cursor-pointer rounded accent-blue-500" />
                       </th>
                     )}
                     {listFields.map(f => (
-                      <th key={f.name} style={{ minWidth: f.width }}>
+                      <th key={f.name} style={{ minWidth: f.width }} className={cn(
+                        table === 'projects' && f.name === 'name' && 'project-ledger-sticky project-ledger-name',
+                        table === 'projects' && f.name === 'receivable' && 'project-ledger-sticky project-ledger-balance',
+                      )}>
                         <button onClick={() => toggleSort(f.name)}
                           className="inline-flex items-center gap-1 transition-colors duration-200 hover:text-brand">
                           {f.label}
@@ -392,13 +406,24 @@ export default function TablePage() {
                   {rows.map(r => (
                     <tr key={r.id} className={cn(selected.includes(r.id) && 'bg-blue-50/60')}>
                       {canWrite && (
-                        <td>
+                        <td className={cn(
+                          table === 'projects' && 'project-ledger-sticky project-ledger-check',
+                          selected.includes(r.id) && table === 'projects' && 'bg-blue-50',
+                        )}>
                           <input type="checkbox" checked={selected.includes(r.id)}
                             onChange={e => setSelected(s => e.target.checked ? [...s, r.id] : s.filter(x => x !== r.id))}
                             className="h-4 w-4 cursor-pointer rounded accent-blue-500" />
                         </td>
                       )}
-                      {listFields.map(f => <td key={f.name}>{renderCell(table, f, r, meta)}</td>)}
+                      {listFields.map(f => (
+                        <td key={f.name} className={cn(
+                          table === 'projects' && f.name === 'name' && 'project-ledger-sticky project-ledger-name',
+                          table === 'projects' && f.name === 'receivable' && 'project-ledger-sticky project-ledger-balance',
+                          selected.includes(r.id) && table === 'projects' && ['name', 'receivable'].includes(f.name) && 'bg-blue-50',
+                        )}>
+                          {renderCell(table, f, r, meta)}
+                        </td>
+                      ))}
                       <td className="text-right">
                         <div className="flex items-center justify-end gap-1">
                           {table === 'projects' && (
@@ -462,48 +487,6 @@ export default function TablePage() {
           )}
         </Card>
 
-        {/* 项目页右栏：趋势 + 分类 */}
-        {table === 'projects' && (
-          <div className="space-y-4 xl:col-span-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>合同额与回款趋势</CardTitle>
-              </CardHeader>
-              <div className="px-3 pb-4">
-                <TrendLines
-                  data={(dash?.monthly || []).slice(-6).map(m => ({
-                    label: String(m.ym).slice(2),
-                    inflow: n0(m.inflow) / 10000,
-                    outflow: n0(m.outflow) / 10000,
-                  }))}
-                  height={180} unit=" 万"
-                  series={[
-                    { key: 'inflow', name: '回款', color: '#3B82F6' },
-                    { key: 'outflow', name: '付款', color: '#F97316' },
-                  ]}
-                />
-              </div>
-            </Card>
-
-            <Card>
-              <CardHeader><CardTitle>子系统合同额分布</CardTitle></CardHeader>
-              <div className="px-5 pb-5">
-                <DonutWithLegend
-                  height={150}
-                  centerValue={Object.keys(dash?.by_category || {}).length}
-                  centerLabel="个子系统"
-                  slices={Object.entries(dash?.by_category || {})
-                    .sort((a, b) => b[1].contract_in - a[1].contract_in)
-                    .slice(0, 5)
-                    .map(([k, v], i) => ({
-                      key: k, name: k, value: Math.round(v.contract_in / 10000),
-                      color: ['#3B82F6', '#8B5CF6', '#F97316', '#10B981', '#06B6D4'][i],
-                    }))}
-                />
-              </div>
-            </Card>
-          </div>
-        )}
       </div>
 
       {confirmNode}
