@@ -45,6 +45,10 @@ export default function TablePage() {
   const [busy, setBusy] = useState(false)
   const [reloadSeq, setReloadSeq] = useState(0)
   const requestSeq = useRef(0)
+  const tableScrollRef = useRef<HTMLDivElement>(null)
+  const bottomScrollRef = useRef<HTMLDivElement>(null)
+  const [tableScrollWidth, setTableScrollWidth] = useState(0)
+  const [hasHorizontalOverflow, setHasHorizontalOverflow] = useState(false)
 
   const canWrite = !!user?.perms && (user.perms.all || user.perms.write.includes(table))
 
@@ -82,6 +86,37 @@ export default function TablePage() {
   }, [table])
   useEffect(() => { setSelected([]) }, [q, filters, page])
   useEffect(() => { const t = setTimeout(load, 240); return () => clearTimeout(t) }, [load])
+
+  // 项目表格的原生横向滚动条会跟着表格内容沉到最底部，不方便随时查看右侧列。
+  // 底栏放一条同步滚动条，并在表格宽度或窗口尺寸变化时同步它的长度。
+  useEffect(() => {
+    if (table !== 'projects' || !rows?.length) {
+      setTableScrollWidth(0)
+      setHasHorizontalOverflow(false)
+      return
+    }
+    const el = tableScrollRef.current
+    if (!el) return
+    const measure = () => {
+      setTableScrollWidth(el.scrollWidth)
+      setHasHorizontalOverflow(el.scrollWidth > el.clientWidth + 1)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    if (el.firstElementChild) observer.observe(el.firstElementChild)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [table, rows, canWrite])
+
+  const syncHorizontalScroll = (source: HTMLDivElement, target: HTMLDivElement | null) => {
+    if (target && Math.abs(target.scrollLeft - source.scrollLeft) > 1) {
+      target.scrollLeft = source.scrollLeft
+    }
+  }
 
   const afterRecordSaved = useCallback((_id: number, isNew: boolean) => {
     if (isNew) {
@@ -406,7 +441,12 @@ export default function TablePage() {
             <div className={cn(
               'overflow-x-auto px-2 pb-2',
               table === 'projects' && 'project-ledger-scroll',
-            )}>
+            )}
+              ref={table === 'projects' ? tableScrollRef : undefined}
+              onScroll={table === 'projects'
+                ? e => syncHorizontalScroll(e.currentTarget, bottomScrollRef.current)
+                : undefined}
+            >
               <table className={cn(
                 'tbl min-w-full',
                 table === 'projects' && 'project-ledger-table',
@@ -494,6 +534,17 @@ export default function TablePage() {
           )}
 
           <div className={cn(table === 'projects' && 'project-ledger-footer')}>
+            {table === 'projects' && rows?.length && hasHorizontalOverflow ? (
+              <div
+                ref={bottomScrollRef}
+                className="project-ledger-bottom-scroll"
+                onScroll={e => syncHorizontalScroll(e.currentTarget, tableScrollRef.current)}
+                aria-label="项目台账横向滚动条"
+              >
+                <div style={{ width: tableScrollWidth }} />
+              </div>
+            ) : null}
+
             {/* 合计行 */}
             {rows?.length ? (
               <div className="mx-5 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-tile bg-slate-50 px-4 py-2.5">

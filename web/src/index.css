@@ -335,7 +335,7 @@ html[data-theme='dark'] {
 
   /* 项目列表在自己的区域内滚动，让底部合计、翻页和横向滚动条留在视野内。 */
   .project-ledger-scroll {
-    max-height: clamp(300px, calc(100dvh - 510px), 720px);
+    max-height: clamp(360px, calc(100dvh - 410px), 780px);
     overflow: auto;
     scrollbar-gutter: stable;
   }
@@ -353,6 +353,27 @@ html[data-theme='dark'] {
     padding-top: 8px;
     background: var(--card-bg);
     box-shadow: 0 -12px 24px -24px rgb(var(--c-ink-900) / 0.45);
+  }
+  .project-ledger-bottom-scroll {
+    height: 18px;
+    margin: 0 20px 8px;
+    overflow-x: scroll;
+    overflow-y: hidden;
+    scrollbar-gutter: stable;
+  }
+  .project-ledger-bottom-scroll > div { height: 1px; }
+  .project-ledger-bottom-scroll::-webkit-scrollbar { height: 12px; }
+  .project-ledger-bottom-scroll::-webkit-scrollbar-track {
+    border-radius: 999px;
+    background: rgb(var(--c-surface-3));
+  }
+  .project-ledger-bottom-scroll::-webkit-scrollbar-thumb {
+    min-width: 48px;
+    border-radius: 999px;
+    background: rgb(var(--c-ink-400) / 0.72);
+  }
+  .project-ledger-bottom-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--c-ink-400));
   }
 
   /* 骨架屏 */
