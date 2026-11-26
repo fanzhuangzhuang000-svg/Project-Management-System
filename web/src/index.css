@@ -317,27 +317,30 @@ html[data-theme='dark'] {
     position: sticky;
     background: var(--card-bg);
   }
-  .project-ledger-table thead .project-ledger-sticky { z-index: 12; }
   .project-ledger-table tbody .project-ledger-sticky { z-index: 2; }
   .project-ledger-table .project-ledger-check {
     left: 0;
     min-width: 56px;
     width: 56px;
   }
-  .project-ledger-table .project-ledger-name { left: 0; }
+  .project-ledger-table .project-ledger-name { left: var(--ledger-check-width, 0px); }
   .project-ledger-table .project-ledger-balance {
-    left: 240px;
+    left: calc(var(--ledger-check-width, 0px) + var(--ledger-name-width, 240px));
     box-shadow: 8px 0 12px -12px rgb(var(--c-ink-900) / 0.4);
+    white-space: nowrap;
   }
-  .project-ledger-table.project-ledger-can-write .project-ledger-name { left: 56px; }
-  .project-ledger-table.project-ledger-can-write .project-ledger-balance { left: 296px; }
   .project-ledger-table tbody tr:hover .project-ledger-sticky { background: var(--tile-bg); }
 
-  /* 项目列表在自己的区域内滚动，让底部合计、翻页和横向滚动条留在视野内。 */
+  /* 滚动区吃掉工具栏与底栏之间的剩余高度，只保留自己的原生横向滚动条。 */
   .project-ledger-scroll {
-    height: clamp(300px, calc(100dvh - 510px), 720px);
+    flex: 1 1 0%;
+    min-height: 0;
     overflow: auto;
     scrollbar-gutter: stable;
+  }
+  .project-ledger-scroll:focus-visible {
+    outline: 2px solid rgb(var(--c-blue-fg));
+    outline-offset: -2px;
   }
   .project-ledger-table thead th {
     position: sticky;
@@ -347,31 +350,27 @@ html[data-theme='dark'] {
   }
   .project-ledger-table thead .project-ledger-sticky { z-index: 15; }
   .project-ledger-footer {
-    position: relative;
-    z-index: 20;
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    justify-content: flex-end;
+    /* 悬浮助手占据窗口右下角，这里为它留出空间，避免遮住翻页和滚动条。 */
+    min-height: 68px;
     padding-top: 8px;
-    background: var(--card-bg);
+    padding-inline-end: 64px;
     box-shadow: 0 -12px 24px -24px rgb(var(--c-ink-900) / 0.45);
   }
-  .project-ledger-bottom-scroll {
-    height: 18px;
-    margin: 0 20px 8px;
-    overflow-x: scroll;
-    overflow-y: hidden;
-    scrollbar-gutter: stable;
-  }
-  .project-ledger-bottom-scroll > div { height: 1px; }
-  .project-ledger-bottom-scroll::-webkit-scrollbar { height: 12px; }
-  .project-ledger-bottom-scroll::-webkit-scrollbar-track {
+  .project-ledger-scroll::-webkit-scrollbar:horizontal { height: 12px; }
+  .project-ledger-scroll::-webkit-scrollbar-track:horizontal {
     border-radius: 999px;
     background: rgb(var(--c-surface-3));
   }
-  .project-ledger-bottom-scroll::-webkit-scrollbar-thumb {
+  .project-ledger-scroll::-webkit-scrollbar-thumb:horizontal {
     min-width: 48px;
     border-radius: 999px;
     background: rgb(var(--c-ink-400) / 0.72);
   }
-  .project-ledger-bottom-scroll::-webkit-scrollbar-thumb:hover {
+  .project-ledger-scroll::-webkit-scrollbar-thumb:horizontal:hover {
     background: rgb(var(--c-ink-400));
   }
 
@@ -404,6 +403,38 @@ html[data-theme='dark'] {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   }
   html[data-theme='dark'] .tbl tbody tr + tr td { box-shadow: inset 0 1px 0 rgb(var(--c-track) / 0.5); }
+}
+
+/* 矮窗口优先把高度留给可滚动的项目行，欢迎条、统计和过滤仍保留。 */
+@media (max-height: 720px) {
+  .project-ledger-page {
+    gap: 8px;
+  }
+  .project-ledger-page > .card,
+  .project-ledger-toolbar {
+    padding-block: 8px;
+  }
+  .project-ledger-page > .grid {
+    gap: 8px;
+  }
+  .project-ledger-page > .grid > .card {
+    gap: 8px;
+    padding: 8px;
+  }
+  .project-ledger-page > .grid .tnum {
+    font-size: 18px;
+  }
+  .project-ledger-footer > :first-child:not(:last-child) {
+    margin-bottom: 8px;
+  }
+  .project-ledger-footer > :nth-child(2) {
+    padding-bottom: 12px;
+  }
+}
+@media (max-height: 720px) and (min-width: 900px) {
+  .project-ledger-page > .grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @layer utilities {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   Plus, Search, Download, Trash2, Pencil, ArrowUpDown, ChevronLeft, ChevronRight,
@@ -25,6 +25,7 @@ const PAGE_SIZE = 20
 
 export default function TablePage() {
   const { table = 'projects' } = useParams()
+  const isProjectLedger = table === 'projects'
   const { meta, user, dash, refreshDash, refreshMeta } = useApp()
   const nav = useNavigate()
   const toast = useToast()
@@ -46,9 +47,7 @@ export default function TablePage() {
   const [reloadSeq, setReloadSeq] = useState(0)
   const requestSeq = useRef(0)
   const tableScrollRef = useRef<HTMLDivElement>(null)
-  const bottomScrollRef = useRef<HTMLDivElement>(null)
-  const [tableScrollWidth, setTableScrollWidth] = useState(0)
-  const [hasHorizontalOverflow, setHasHorizontalOverflow] = useState(false)
+  const hasRows = !!rows?.length
 
   const canWrite = !!user?.perms && (user.perms.all || user.perms.write.includes(table))
 
@@ -87,36 +86,27 @@ export default function TablePage() {
   useEffect(() => { setSelected([]) }, [q, filters, page])
   useEffect(() => { const t = setTimeout(load, 240); return () => clearTimeout(t) }, [load])
 
-  // 项目表格的原生横向滚动条会跟着表格内容沉到最底部，不方便随时查看右侧列。
-  // 底栏放一条同步滚动条，并在表格宽度或窗口尺寸变化时同步它的长度。
-  useEffect(() => {
-    if (table !== 'projects' || !rows?.length) {
-      setTableScrollWidth(0)
-      setHasHorizontalOverflow(false)
-      return
+  // 浏览器会按实际内容调整列宽。冻结列以相邻表头的真实宽度为准，
+  // 在长项目名、不同窗口宽度和没有勾选列的只读模式下都能贴齐。
+  useLayoutEffect(() => {
+    const scroller = tableScrollRef.current
+    const name = scroller?.querySelector('thead .project-ledger-name')
+    if (!scroller || !name) return
+    const check = scroller.querySelector('thead .project-ledger-check')
+    const updateOffsets = () => {
+      scroller.style.setProperty('--ledger-check-width', `${check?.getBoundingClientRect().width ?? 0}px`)
+      scroller.style.setProperty('--ledger-name-width', `${name.getBoundingClientRect().width}px`)
     }
-    const el = tableScrollRef.current
-    if (!el) return
-    const measure = () => {
-      setTableScrollWidth(el.scrollWidth)
-      setHasHorizontalOverflow(el.scrollWidth > el.clientWidth + 1)
-    }
-    measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(el)
-    if (el.firstElementChild) observer.observe(el.firstElementChild)
-    window.addEventListener('resize', measure)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', measure)
-    }
-  }, [table, rows, canWrite])
+    updateOffsets()
+    const observer = new ResizeObserver(updateOffsets)
+    observer.observe(name, { box: 'border-box' })
+    if (check) observer.observe(check, { box: 'border-box' })
+    return () => observer.disconnect()
+  }, [isProjectLedger, def, hasRows, canWrite])
 
-  const syncHorizontalScroll = (source: HTMLDivElement, target: HTMLDivElement | null) => {
-    if (target && Math.abs(target.scrollLeft - source.scrollLeft) > 1) {
-      target.scrollLeft = source.scrollLeft
-    }
-  }
+  useLayoutEffect(() => {
+    if (tableScrollRef.current) tableScrollRef.current.scrollTop = 0
+  }, [table, page, q, filters, sort, order])
 
   const afterRecordSaved = useCallback((_id: number, isNew: boolean) => {
     if (isNew) {
@@ -341,9 +331,9 @@ export default function TablePage() {
   const allChecked = rows?.length ? rows.every(r => selected.includes(r.id)) : false
 
   return (
-    <div className="space-y-4">
+    <div className={isProjectLedger ? 'project-ledger-page flex min-h-0 flex-1 flex-col gap-4' : 'space-y-4'}>
       {/* ══════ 欢迎条 ══════ */}
-      <Card className="flex flex-wrap items-center gap-4 px-6 py-5">
+      <Card className="flex shrink-0 flex-wrap items-center gap-4 px-6 py-5">
         <div className="min-w-0">
           <h1 className="text-page text-ink-900">
             {user?.name || '管理员'}，{greetWord()}
@@ -375,7 +365,7 @@ export default function TablePage() {
 
       {/* ══════ 小指标卡 ══════ */}
       {!!strip.length && (
-        <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+        <div className="grid shrink-0 grid-cols-2 gap-4 xl:grid-cols-4">
           {strip.map((s, i) => (
             <Card key={i} hover className="flex items-center gap-3.5 p-4">
               <IconTile icon={s.icon} tone={s.tone} />
@@ -392,10 +382,11 @@ export default function TablePage() {
       )}
 
       {/* ══════ 主体：数据表格 ══════ */}
-      <div className="grid grid-cols-1 gap-4">
-        <Card>
+      <div className={isProjectLedger ? 'flex min-h-0 flex-1 flex-col' : 'grid grid-cols-1 gap-4'}>
+        <Card className={cn(isProjectLedger && 'flex min-h-0 flex-1 flex-col')}>
           {/* 工具条 */}
-          <div className="flex flex-wrap items-center gap-2.5 px-5 pt-5 pb-3">
+          <div className={cn('flex shrink-0 flex-wrap items-center gap-2.5 px-5 pt-5 pb-3',
+            isProjectLedger && 'project-ledger-toolbar')}>
             <div className="relative w-[240px]">
               <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-400" />
               <Input value={q} onChange={e => { setQ(e.target.value); setPage(1) }}
@@ -419,7 +410,8 @@ export default function TablePage() {
 
           {/* 选中操作条 */}
           {selected.length > 0 && (
-            <div className="mx-5 mb-3 flex items-center gap-3 rounded-tile bg-blue-50 px-4 py-2.5">
+            <div className={cn('mx-5 mb-3 flex items-center gap-3 rounded-tile bg-blue-50 px-4 py-2.5',
+              isProjectLedger && 'shrink-0 flex-wrap')}>
               <span className="text-tiny font-medium text-blue-700">已选 {selected.length} 条</span>
               <a className="btn btn-sm btn-soft !h-8 !px-3 text-tiny" href={http.exportUrl(table, { q, ...filters })}>导出所选</a>
               {canWrite && (
@@ -433,24 +425,26 @@ export default function TablePage() {
 
           {/* 表格 */}
           {rows === null ? (
-            <div className="space-y-2 px-5 pb-5">{[0, 1, 2, 3, 4].map(i => <Skeleton key={i} className="h-12" />)}</div>
+            <div className={cn('space-y-2 px-5 pb-5', isProjectLedger && 'min-h-0 flex-1 overflow-auto')}>
+              {[0, 1, 2, 3, 4].map(i => <Skeleton key={i} className="h-12" />)}
+            </div>
           ) : !rows.length ? (
-            <Empty icon={Icon} title={`还没有${def.label}数据`}
+            <Empty icon={Icon} className={isProjectLedger ? 'min-h-0 flex-1 overflow-auto' : undefined}
+              title={`还没有${def.label}数据`}
               hint={canWrite ? `点右上角「新建${def.label}」开始录入` : '当前筛选条件下没有记录'} />
           ) : (
             <div className={cn(
               'overflow-x-auto px-2 pb-2',
-              table === 'projects' && 'project-ledger-scroll',
+              isProjectLedger && 'project-ledger-scroll',
             )}
-              ref={table === 'projects' ? tableScrollRef : undefined}
-              onScroll={table === 'projects'
-                ? e => syncHorizontalScroll(e.currentTarget, bottomScrollRef.current)
-                : undefined}
+              ref={isProjectLedger ? tableScrollRef : undefined}
+              role={isProjectLedger ? 'region' : undefined}
+              aria-label={isProjectLedger ? '项目台账表格' : undefined}
+              tabIndex={isProjectLedger ? 0 : undefined}
             >
               <table className={cn(
                 'tbl min-w-full',
-                table === 'projects' && 'project-ledger-table',
-                table === 'projects' && canWrite && 'project-ledger-can-write',
+                isProjectLedger && 'project-ledger-table',
               )}>
                 <thead>
                   <tr>
@@ -533,18 +527,7 @@ export default function TablePage() {
             </div>
           )}
 
-          <div className={cn(table === 'projects' && 'project-ledger-footer')}>
-            {table === 'projects' && rows?.length && hasHorizontalOverflow ? (
-              <div
-                ref={bottomScrollRef}
-                className="project-ledger-bottom-scroll"
-                onScroll={e => syncHorizontalScroll(e.currentTarget, tableScrollRef.current)}
-                aria-label="项目台账横向滚动条"
-              >
-                <div style={{ width: tableScrollWidth }} />
-              </div>
-            ) : null}
-
+          <div className={cn(isProjectLedger && 'project-ledger-footer')}>
             {/* 合计行 */}
             {rows?.length ? (
               <div className="mx-5 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-tile bg-slate-50 px-4 py-2.5">
@@ -671,6 +654,9 @@ function renderCell(table: string, f: any, r: Row, meta: any) {
 
   const txt = v === null || v === undefined || v === '' ? null : String(v)
   if (!txt) return <span className="text-ink-300">—</span>
+  if (table === 'projects' && f.name === 'name') {
+    return <span className="block max-w-[260px] text-ink-900 [overflow-wrap:anywhere]">{txt}</span>
+  }
   return <span className={cn(truncateClass(f))} title={txt.length > 24 ? txt : undefined}>{txt}</span>
 }
 

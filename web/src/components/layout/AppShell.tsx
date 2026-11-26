@@ -1,4 +1,4 @@
-import { Outlet, useLocation } from 'react-router-dom'
+import { matchPath, Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { AiAssistant } from './AiAssistant'
@@ -21,6 +21,7 @@ export function AppShell() {
   const [profileOpen, setProfileOpen] = useState(false)
   // 辅助栏：只在工作台/报表这类「总览页」显示（设计稿：右侧栏跟着工作台走）
   const showAside = ['/', '/dashboard', '/reports'].includes(loc.pathname)
+  const isProjectLedger = !!matchPath('/t/projects', loc.pathname)
 
   if (!user) return null
 
@@ -37,19 +38,22 @@ export function AppShell() {
         />
 
         <div className="flex min-h-0 flex-1">
-          <main className="min-w-0 flex-1 overflow-y-auto px-6 pb-24 pt-5">
-            {/* 数据库结构升级失败（正常时不渲染任何东西）—— 比授权更靠前：
-                授权到期只是不能录入，结构不对是录错了都不知道 */}
-            <DbMigrationBanner />
+          <main className={cn('min-w-0 flex-1 overflow-y-auto px-6 pt-5',
+            isProjectLedger ? 'flex flex-col pb-3' : 'pb-24')}>
+            <div className="shrink-0">
+              {/* 数据库结构升级失败（正常时不渲染任何东西）—— 比授权更靠前：
+                  授权到期只是不能录入，结构不对是录错了都不知道 */}
+              <DbMigrationBanner />
 
-            {/* 授权到期提醒（正常时不渲染任何东西） */}
-            <LicenseBanner />
+              {/* 授权到期提醒（正常时不渲染任何东西） */}
+              <LicenseBanner />
 
-            {/* 面包屑（轻量，不占视觉重量） */}
-            <div className="mb-4 flex items-center gap-2 text-tiny text-ink-400">
-              <span>{S.system_name}</span>
-              <span className="text-ink-200">/</span>
-              <span className="text-ink-500">{titleOf(loc.pathname, meta?.tables || {})}</span>
+              {/* 面包屑（轻量，不占视觉重量） */}
+              <div className="mb-4 flex items-center gap-2 text-tiny text-ink-400">
+                <span>{S.system_name}</span>
+                <span className="text-ink-200">/</span>
+                <span className="text-ink-500">{titleOf(loc.pathname, meta?.tables || {})}</span>
+              </div>
             </div>
             <Outlet />
           </main>
